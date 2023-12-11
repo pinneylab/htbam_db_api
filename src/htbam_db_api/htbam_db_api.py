@@ -4,8 +4,13 @@ from typing import List, Tuple
 import numpy as np
 import json
 from pathlib import Path
+import pint
 
 CURRENT_VERSION = "0.0.1"
+
+ureg = pint.UnitRegistry()
+ureg.setup_matplotlib(True)
+ureg.define('RFU = [luminosity]')
 
 class AbstractHtbamDBAPI(ABC):
     def __init__(self):
@@ -92,6 +97,20 @@ class HTBAM_Experiment(AbstractHtbamDBAPI):
         data = self._get_dict_from_file()
         path_traversed = ""
         for p in path:
+            # TODO: get wildcard working, like db.get('runs/standard_0/assays/*/chambers/1,1/sum_chamber')
+            # if p == "*":
+            #     #if we're at a wildcard, find the matching values in ALL children:
+            #     if type(data) == dict:
+            #         children = list(data.keys())
+            #     else:
+            #         raise ValueError(f"Wildcard found at {path_traversed}, which is a {type(data)}. Wildcards can only be used on dicts.")
+            #     data_list = [self.get(path_traversed + child + "/") for child in children]
+            #     for d in data_list:
+            #         print(d)
+            #     data = np.concatenate(data_list)
+            #     return data
+            
+            #handle errors
             if p not in data:
                 error_string = f"Path {path_traversed+p} not found in database. \n"
                 if type(data) == dict:
@@ -101,6 +120,16 @@ class HTBAM_Experiment(AbstractHtbamDBAPI):
                 raise ValueError(error_string)
             data = data[p]
             path_traversed += p + "/"
+
+        #if this is a quantity, convert to a pint.Quantity
+        if type(data) == dict:
+            if 'is_quantity' in data.keys() and data['is_quantity']:
+                data = self._dict_to_quantity(data)
+
+        # #if this is a dict, convert all quantities to pint.Quantities
+        # if type(data) == dict:
+        #     data = self._make_quantities_from_serialized_dict(data)
+        
         return data
     
     ##########################################################################################
@@ -145,6 +174,10 @@ class HTBAM_Experiment(AbstractHtbamDBAPI):
         if type(path) == str:
             path = Path(path)
 
+        #is new_data a quantity? If so, convert to dict
+        if type(new_data) == pint.Quantity:
+            new_data = self._quantity_to_dict(new_data)
+
         path = path.parts
         full_data = self._get_dict_from_file()
         current_data = full_data #this will be updated as we traverse the path
@@ -176,6 +209,58 @@ class HTBAM_Experiment(AbstractHtbamDBAPI):
         self._write_file(full_data)
 
     ##########################################################################################
+    ######################### SERIALIZE / DESERIALIZE QUANTITY DATA ##########################
+    ##########################################################################################
+    def _dict_to_quantity(self, data: dict) -> pint.Quantity:
+        '''
+        Converts a dictionary with keys 'values', 'unit', and 'is_quantity' to a pint.Quantity.
+        This allows us to receive our data from a json file.
+        '''
+        if not data['is_quantity']:
+            raise ValueError("Data is not a quantity.")
+        
+        try:
+            return np.array(data['values']) * ureg(data['unit'])
+        except:
+            raise ValueError(f"Could not convert data to quantity. Data: {data}")
+        
+    def _quantity_to_dict(self, quantity: pint.Quantity) -> dict:
+        '''
+        Converts a pint.Quantity to a dictionary with keys 'values', 'unit', and 'is_quantity'.
+        The reason we need this is so we can store our data in a JSON. json.dump() can't handle np.arrays or pint.Quantities.
+        '''
+        return {
+            'values': quantity.magnitude.tolist(),
+            'unit': str(quantity.units),
+            'is_quantity': True
+        }
+    
+    def _make_serializable_dict(self, data: dict) -> dict:
+        '''
+        Converts all pint.Quantities in a dictionary to dictionaries with keys 'values', 'unit', and 'is_quantity'.
+        This allows us to store our data in a JSON. json.dump() can't handle np.arrays or pint.Quantities.
+        '''
+        for key, value in data.items():
+            if isinstance(value, pint.Quantity):
+                data[key] = self._quantity_to_dict(value)
+            elif isinstance(value, dict):
+                data[key] = self._make_serializable_dict(value)
+        return data
+    
+    def _make_quantities_from_serialized_dict(self, data: dict) -> dict:
+        '''
+        Converts all dictionaries with keys 'values', 'unit', and 'is_quantity' to pint.Quantities.
+        This allows us to receive our data from a json file.
+        '''
+        for key, value in data.items():
+            if isinstance(value, dict):
+                if 'is_quantity' in value.keys() and value['is_quantity']:
+                    data[key] = self._dict_to_quantity(value)
+                else:
+                    data[key] = self._make_quantities_from_serialized_dict(value)
+        return data
+
+    ##########################################################################################
     ######################### LOADING EXPERIMENT DATA FROM CSVs  #############################
     ##########################################################################################
     #(make _load_chamber_metadata !)
@@ -185,17 +270,21 @@ class HTBAM_Experiment(AbstractHtbamDBAPI):
         {button_quant: {
          
             1,1: {
-                sum_chamber: [...],
-                std_chamber: [...]
+                sum_chamber: {'values': [...],
+                            'unit': 'RFU',
+                            'is_quantity': True},
+                std_chamber: {'values': [...],
+                            'unit': 'RFU',
+                            'is_quantity': True},
             },
             ...
             }}
 
-                Parameters:
-                        None
+        Parameters:
+            standard_data_df (pd.DataFrame): Dataframe from standard curve
 
-                Returns:
-                        None
+        Returns:
+            None
         '''    
         unique_chambers = standard_data_df[['id','x_center_chamber', 'y_center_chamber', 'radius_chamber', 
             'xslice', 'yslice', 'indices']].drop_duplicates(subset=["indices"]).set_index("indices")
@@ -207,15 +296,21 @@ class HTBAM_Experiment(AbstractHtbamDBAPI):
         {standard_run_#: {
             name: str,
             type: str,
-            conc_unit: str,
             assays: {
                 1: {
                     conc: float,
-                    _s: [0],time
+                    time:
+                        {'values': [...],
+                        'unit': 's',
+                        'is_quantity': True},
                     chambers: {
                         1,1: {
-                            sum_chamber: [...],
-                            std_chamber: [...]
+                            sum_chamber: {'values': [...],
+                                          'units': 'RFU',
+                                          'is_quantity': True},
+                            std_chamber: {'values': [...],
+                                          'unit': 'RFU'}
+                                          'is_quantity': True},
                         },
                         ...
                         }}}}
@@ -229,6 +324,10 @@ class HTBAM_Experiment(AbstractHtbamDBAPI):
         Returns:
                 None
         '''
+        #First, check if our standard_units is a valid unit of concentration:
+        if ureg(standard_units).dimensionality != ureg.molar.dimensionality:
+            raise ValueError(f"Units {standard_units} are not a valid unit of concentration.\nIs your capitalization correct?")
+        
         standard_data_df = pd.read_csv(standard_curve_data_path)
         standard_data_df['indices'] = standard_data_df.x.astype('str') + ',' + standard_data_df.y.astype('str')
         i = 0    
@@ -237,23 +336,41 @@ class HTBAM_Experiment(AbstractHtbamDBAPI):
         for prod_conc, subset in standard_data_df.groupby("concentration_uM"):
             squeezed = _squeeze_df(subset, grouping_index="indices", squeeze_targets=['sum_chamber', 'std_chamber'])
             squeezed["time_s"] = pd.Series([[0]]*len(squeezed), index=squeezed.index) #this tomfoolery is used to create a list with a single value, 0, for the standard curve assays.
+            
+            #turn prod_conc into a pint.Quantity:
+            prod_conc = np.array(prod_conc) * ureg(standard_units)
+            
+            #turn it into a pint.Quantity:
+            time_quantity = squeezed.iloc[0]["time_s"] * ureg("s")
+
+            #now, we need to properly format the data for each chamber:
+            chambers_dict_unformatted = squeezed.drop(columns=["time_s", "indices"]).to_dict("index")
+            chambers_dict = {}
+            for chamber_coord, chamber_data in chambers_dict_unformatted.items():
+                chambers_dict[chamber_coord]  = {}
+                for key, value in chamber_data.items():
+                    #convert to pint.Quantity:
+                    chambers_dict[chamber_coord][key] = value * ureg("RFU")
+
+            #make dict for each assay
             std_assay_dict[i] = {
-                "conc": prod_conc,
-                "time_s": squeezed.iloc[0]["time_s"],
-                "chambers": squeezed.drop(columns=["time_s", "indices"]).to_dict("index")}
+                "conc": prod_conc, #serialize using our custom _quantity_to_dict function
+                "time": time_quantity, 
+                "chambers": chambers_dict}
+            
             i += 1
 
         std_run_num = len([key for key in self.get(Path('runs')) if "standard_" in key])
         standard_data_dict = {
             "name": standard_name,
             "type": standard_type,
-            "conc_unit": standard_units,
             "assays": std_assay_dict
             }
         
         #append to file
+        standard_data_dict = self._make_serializable_dict(standard_data_dict) #convert all quantities to dicts so we can save to json
         self._update_file(Path("runs") / f"standard_{std_run_num}", standard_data_dict)
-
+        
         #update chamber metadata
         self._load_chamber_metadata(standard_data_df)
        
@@ -263,42 +380,32 @@ class HTBAM_Experiment(AbstractHtbamDBAPI):
         {kinetics_run_#: {
             name: str,
             type: str,
-            conc_unit: str,
             assays: {
                 1: {
                     conc: float,
-                    time_s: [0],
+                    time: {'values': [...],
+                            'unit': 's',
+                            'is_quantity': True},,
                     chambers: {
                         1,1: {
-                            sum_chamber: [...],
-                            std_chamber: [...]
+                            sum_chamber: {'values': [...],
+                                          'unit': 'RFU',
+                                          'is_quantity': True},
+                            std_chamber: {'values': [...],
+                                          'unit': 'RFU'}
+                                          'is_quantity': True},
                         },
                         ...
                         }}}}
 
-                Parameters:
-                        None
+        Parameters:
+            kinetic_data_path (str): Path to kinetic data
+            kinetic_name (str): Name of kinetic data
+            kinetic_type (str): Type of kinetic data
+            kinetic_units (str): Units of kinetic data
 
-                Returns:
-                        None
-        
-                        
-        {kintetcs: {
-            substrate_conc: {
-                time_s: [0,1, ...],
-                chambers: {
-                    1,1: {
-                        sum_chamber: [...],
-                        std_chamber: [...]
-                    },
-                    ...
-                    }}}}
-
-                Parameters:
-                        None
-
-                Returns:
-                        None
+        Returns:
+                None
         '''    
 
         kinetic_data_df = pd.read_csv(kinetic_data_path)
@@ -321,21 +428,38 @@ class HTBAM_Experiment(AbstractHtbamDBAPI):
         kin_dict = {}
         for sub_conc, subset in kinetic_data_df.groupby("series_index"):
             squeezed = _squeeze_df(subset, grouping_index="indices", squeeze_targets=["time_s",'sum_chamber', 'std_chamber'])
+            
+            #turn sub_conc into a pint.Quantity:
+            sub_conc = np.array(parse_concentration(sub_conc)) * ureg(kinetic_units)
+
+            #turn time into a pint.Quantity:
+            time_quantity = np.array(squeezed.iloc[0]["time_s"]) * ureg("s")
+
+            #now, we need to properly format the data for each chamber:
+            chambers_dict_unformatted = squeezed.drop(columns=["time_s", "indices"]).to_dict("index")
+            chambers_dict = {}
+            for chamber_coord, chamber_data in chambers_dict_unformatted.items():
+                chambers_dict[chamber_coord]  = {}
+                for key, value in chamber_data.items():
+                    #convert to pint.Quantity:
+                    chambers_dict[chamber_coord][key] = value * ureg("RFU")
+
+            #make dict for each assay
             kin_dict[i] = {
-                "conc": parse_concentration(sub_conc),
-                "time_s": squeezed.iloc[0]["time_s"],
-                "chambers": squeezed.drop(columns=["time_s", "indices"]).to_dict("index")}
+                "conc": sub_conc, 
+                "time": time_quantity,
+                "chambers": chambers_dict}
             i += 1
 
         kinetics_run_num = len([key for key in self.get(Path('runs')) if "kinetics_" in key])
         kinetics_data_dict = {
             "name": kinetic_name,
             "type": kinetic_type,
-            "conc_unit": kinetic_units,
             "assays": kin_dict
         }
         
         #append to file
+        kinetics_data_dict = self._make_serializable_dict(kinetics_data_dict) #convert all quantities to dicts so we can save to json
         self._update_file(Path("runs") / f"kinetics_{kinetics_run_num}", kinetics_data_dict)
 
     def load_button_quant_data_from_file(self, kinetic_data_path: str) -> None:
@@ -412,6 +536,8 @@ class HTBAM_Experiment(AbstractHtbamDBAPI):
         '''
         #get data from this run as a dict:
         run_data = self.get(Path("runs") / run_name)
+        #convert all serialized quantities to pint.Quantities:
+        run_data = self._make_quantities_from_serialized_dict(run_data)
 
         #get chamber_coords from file:
         chamber_coords = np.array(list(self.get('chamber_metadata').keys()))
@@ -423,15 +549,14 @@ class HTBAM_Experiment(AbstractHtbamDBAPI):
         #First, we'll just check what the max # of time points is:
         max_time_points = 0
         for assay in run_data['assays'].keys():
-            current_assay_time_points = len(np.array(run_data['assays'][assay]['time_s']))
+            current_assay_time_points = len(run_data['assays'][assay]['time'])
             if current_assay_time_points > max_time_points:
                 max_time_points = current_assay_time_points
 
         for assay in run_data['assays'].keys():
             #to make things easier later, we'll be sorting the datapoints by time value.
             #Get time data:
-            #collect from DB
-            current_time_array = np.array(run_data['assays'][assay]['time_s'])
+            current_time_array = run_data['assays'][assay]['time']
             current_time_array = current_time_array.astype(float) #so we can pad with NaNs
             #pad the array with NaNs if there are fewer time points than the max
             current_time_array = np.pad(current_time_array, (0, max_time_points - len(current_time_array)), 'constant', constant_values=np.nan)
@@ -449,7 +574,7 @@ class HTBAM_Experiment(AbstractHtbamDBAPI):
             current_luminance_array = None
             for chamber_idx in chamber_coords:
                 #collect from DB
-                current_chamber_array = np.array(run_data['assays'][assay]['chambers'][chamber_idx]['sum_chamber'])
+                current_chamber_array = run_data['assays'][assay]['chambers'][chamber_idx]['sum_chamber']
                 #set type to float:
                 current_chamber_array = current_chamber_array.astype(float)
                 #pad the array with NaNs if there are fewer time points than the max
@@ -515,6 +640,7 @@ class HTBAM_Experiment(AbstractHtbamDBAPI):
         }
 
         #write to file
+        analysis_dict = self._make_serializable_dict(analysis_dict)
         self._update_file(analysis_path, analysis_dict)
     
 
