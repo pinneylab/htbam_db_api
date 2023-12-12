@@ -8,10 +8,6 @@ import pint
 
 CURRENT_VERSION = "0.0.1"
 
-ureg = pint.UnitRegistry()
-ureg.setup_matplotlib(True)
-ureg.define('RFU = [luminosity]')
-
 class AbstractHtbamDBAPI(ABC):
     def __init__(self):
         pass
@@ -38,9 +34,16 @@ def _squeeze_df(df: pd.DataFrame, grouping_index: str, squeeze_targets: List[str
 
 class HTBAM_Experiment(AbstractHtbamDBAPI):
 
-    def __init__(self, file:str, new:bool=False):
+    def __init__(self, file:str, new:bool=False, units_registry=None):
         super().__init__()
         self._experiment_file = Path(file)
+
+        if units_registry is None:
+            units_registry = pint.UnitRegistry()
+        self.ureg = units_registry
+        #make sure these are set up
+        self.ureg.setup_matplotlib(True)
+        self.ureg.define('RFU = [luminosity]')
 
         #does it have the correct extension?
         if self._experiment_file.suffix != ".HTBAM":
@@ -220,7 +223,7 @@ class HTBAM_Experiment(AbstractHtbamDBAPI):
             raise ValueError("Data is not a quantity.")
         
         try:
-            return np.array(data['values']) * ureg(data['unit'])
+            return np.array(data['values']) * self.ureg(data['unit'])
         except:
             raise ValueError(f"Could not convert data to quantity. Data: {data}")
         
@@ -325,7 +328,7 @@ class HTBAM_Experiment(AbstractHtbamDBAPI):
                 None
         '''
         #First, check if our standard_units is a valid unit of concentration:
-        if ureg(standard_units).dimensionality != ureg.molar.dimensionality:
+        if self.ureg(standard_units).dimensionality != self.ureg.molar.dimensionality:
             raise ValueError(f"Units {standard_units} are not a valid unit of concentration.\nIs your capitalization correct?")
         
         standard_data_df = pd.read_csv(standard_curve_data_path)
@@ -338,10 +341,10 @@ class HTBAM_Experiment(AbstractHtbamDBAPI):
             squeezed["time_s"] = pd.Series([[0]]*len(squeezed), index=squeezed.index) #this tomfoolery is used to create a list with a single value, 0, for the standard curve assays.
             
             #turn prod_conc into a pint.Quantity:
-            prod_conc = np.array(prod_conc) * ureg(standard_units)
+            prod_conc = np.array(prod_conc) * self.ureg(standard_units)
             
             #turn it into a pint.Quantity:
-            time_quantity = squeezed.iloc[0]["time_s"] * ureg("s")
+            time_quantity = squeezed.iloc[0]["time_s"] * self.ureg("s")
 
             #now, we need to properly format the data for each chamber:
             chambers_dict_unformatted = squeezed.drop(columns=["time_s", "indices"]).to_dict("index")
@@ -350,7 +353,7 @@ class HTBAM_Experiment(AbstractHtbamDBAPI):
                 chambers_dict[chamber_coord]  = {}
                 for key, value in chamber_data.items():
                     #convert to pint.Quantity:
-                    chambers_dict[chamber_coord][key] = value * ureg("RFU")
+                    chambers_dict[chamber_coord][key] = value * self.ureg("RFU")
 
             #make dict for each assay
             std_assay_dict[i] = {
@@ -430,10 +433,10 @@ class HTBAM_Experiment(AbstractHtbamDBAPI):
             squeezed = _squeeze_df(subset, grouping_index="indices", squeeze_targets=["time_s",'sum_chamber', 'std_chamber'])
             
             #turn sub_conc into a pint.Quantity:
-            sub_conc = np.array(parse_concentration(sub_conc)) * ureg(kinetic_units)
+            sub_conc = np.array(parse_concentration(sub_conc)) * self.ureg(kinetic_units)
 
             #turn time into a pint.Quantity:
-            time_quantity = np.array(squeezed.iloc[0]["time_s"]) * ureg("s")
+            time_quantity = np.array(squeezed.iloc[0]["time_s"]) * self.ureg("s")
 
             #now, we need to properly format the data for each chamber:
             chambers_dict_unformatted = squeezed.drop(columns=["time_s", "indices"]).to_dict("index")
@@ -442,7 +445,7 @@ class HTBAM_Experiment(AbstractHtbamDBAPI):
                 chambers_dict[chamber_coord]  = {}
                 for key, value in chamber_data.items():
                     #convert to pint.Quantity:
-                    chambers_dict[chamber_coord][key] = value * ureg("RFU")
+                    chambers_dict[chamber_coord][key] = value * self.ureg("RFU")
 
             #make dict for each assay
             kin_dict[i] = {
@@ -487,6 +490,12 @@ class HTBAM_Experiment(AbstractHtbamDBAPI):
         "std_button_Button_Quant", "indices"]].drop_duplicates(subset=["indices"]).set_index("indices")
 
         button_quant_dict = unique_buttons.to_dict("index")
+        #convert to pint.Quantity:
+        for chamber_coord, chamber_dict in button_quant_dict.items():
+            for key, value in chamber_dict.items():
+                button_quant_dict[chamber_coord][key] = np.array([value]) * self.ureg("RFU")
+
+        button_quant_dict = self._make_serializable_dict(button_quant_dict) #convert all quantities to dicts so we can save to json
         self._update_file("button_quant", button_quant_dict)
 
 
