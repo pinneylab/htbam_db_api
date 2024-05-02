@@ -219,10 +219,12 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
 
                 Returns:
                         None
-        '''    
-        unique_buttons = self._kinetic_data[["summed_button_Button_Quant","summed_button_BGsub_Button_Quant",
-        "std_button_Button_Quant", "indices"]].drop_duplicates(subset=["indices"]).set_index("indices")
-
+        ''' 
+        try:   
+            unique_buttons = self._kinetic_data[["summed_button_Button_Quant","summed_button_BGsub_Button_Quant",
+            "std_button_Button_Quant", "indices"]].drop_duplicates(subset=["indices"]).set_index("indices")
+        except KeyError:
+            raise HtbamDBException("ButtonQuant columns not found in kinetic data.")
         self._json_dict["button_quant"] = unique_buttons.to_dict("index")  
 
     def __repr__(self) -> str:
@@ -246,3 +248,6 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
         '''This writes the database to file, as a dict -> json'''
         with open('db.json', 'w') as fp:
             json.dump(self._json_dict, fp, indent=4)
+
+class HtbamDBException(Exception):
+    pass
