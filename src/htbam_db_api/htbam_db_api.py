@@ -485,15 +485,18 @@ class HTBAM_Experiment(AbstractHtbamDBAPI):
         '''    
         kinetic_data_df = pd.read_csv(kinetic_data_path)
         kinetic_data_df['indices'] = kinetic_data_df.x.astype('str') + ',' + kinetic_data_df.y.astype('str')
-
-        unique_buttons = kinetic_data_df[["summed_button_Button_Quant","summed_button_BGsub_Button_Quant",
-        "std_button_Button_Quant", "indices"]].drop_duplicates(subset=["indices"]).set_index("indices")
-
+        try:
+            unique_buttons = kinetic_data_df[["summed_button_Button_Quant","summed_button_BGsub_Button_Quant",
+            "std_button_Button_Quant", "indices"]].drop_duplicates(subset=["indices"]).set_index("indices")
+        except KeyError:
+            raise HtbamDBException("ButtonQuant columns not found in kinetic data.")
+            
         button_quant_dict = unique_buttons.to_dict("index")
         #convert to pint.Quantity:
         for chamber_coord, chamber_dict in button_quant_dict.items():
             for key, value in chamber_dict.items():
                 button_quant_dict[chamber_coord][key] = np.array([value]) * self.ureg("RFU")
+
 
         button_quant_dict = self._make_serializable_dict(button_quant_dict) #convert all quantities to dicts so we can save to json
         self._update_file("button_quant", button_quant_dict)
@@ -654,3 +657,11 @@ class HTBAM_Experiment(AbstractHtbamDBAPI):
     
 
     
+
+    def export_json(self):
+        '''This writes the database to file, as a dict -> json'''
+        with open('db.json', 'w') as fp:
+            json.dump(self._json_dict, fp, indent=4)
+
+class HtbamDBException(Exception):
+    pass
