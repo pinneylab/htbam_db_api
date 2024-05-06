@@ -249,7 +249,8 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
             return s
         
         return recursive_string(self._json_dict, 0)
-    
+    def get_run_names(self):
+        return [key for key in self._json_dict['runs'].keys()]
     def get_run_assay_data(self, run_name):
         '''This function takes as input an HTBAM Database object.
         For each kinetics run, we have 
@@ -342,7 +343,7 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
 
     def add_analysis(self, run_name, analysis_type, chamber_idx, analysis_data):
     
-        supported_analysis_types = ['linear_regression']
+        supported_analysis_types = ['linear_regression', 'ic50_raw']
         self._init_analysis(run_name)
 
         if analysis_type not in supported_analysis_types:
@@ -362,9 +363,23 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
 
         #initialize the dictionary
         self._json_dict['runs'][run_name]['analyses'][assay_type] = assay_data
-                
 
-    def get_analysis(self, run_name, analysis_type, param, ):
+    def add_sample_analysis(self, run_name: str, analysis_type: str, sample_name: str, sample_data: dict):
+        supported_assay_types = ['ic50_filtered']
+        if analysis_type not in supported_assay_types:
+            raise HtbamDBException
+        if analysis_type not in self._json_dict['runs'][run_name]['analyses'].keys():
+            self._json_dict['runs'][run_name]['analyses'][analysis_type] = {'samples': {}}
+
+        self._json_dict['runs'][run_name]['analyses'][analysis_type]['samples'][sample_name] = sample_data
+
+    def get_sample_analysis_dict(self, run_name: str, analysis_type: str):
+        return self._json_dict['runs'][run_name]['analyses'][analysis_type]['samples']
+         
+    def get_filters(self, run_name, assay_type):
+        return self._json_dict['runs'][run_name]['analyses'][assay_type]["filters"]
+    
+    def get_analysis(self, run_name, analysis_type, param):
        
         chamber_idxs = self._json_dict['runs'][run_name]['analyses'][analysis_type]['chambers']
         query_result = {chamber_idx: 
@@ -374,6 +389,16 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
 
     def get_chamber_name_dict(self):
         return {chamber_idx: subdict['id'] for chamber_idx, subdict in self._json_dict['chamber_metadata'].items()}
+    
+    def get_chamber_name_to_id_dict(self):
+        chamber_name_to_idx = {}
+        for chamber_idx, subdict in self._json_dict['chamber_metadata'].items():
+            name = subdict['id']
+            if name not in chamber_name_to_idx.keys():
+                chamber_name_to_idx[name] = [chamber_idx]
+            else:
+                chamber_name_to_idx[name].append(chamber_idx)
+        return chamber_name_to_idx
     
     def get_button_quant_data(self, chamber_idx, button_quant_type='summed_button_BGsub_Button_Quant'):
         return self._json_dict['button_quant'][chamber_idx][button_quant_type]
