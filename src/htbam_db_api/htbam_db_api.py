@@ -343,7 +343,7 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
 
     def add_analysis(self, run_name, analysis_type, chamber_idx, analysis_data):
     
-        supported_analysis_types = ['linear_regression', 'ic50_raw']
+        supported_analysis_types = ['linear_regression', 'ic50_raw', 'mm_raw']
         self._init_analysis(run_name)
 
         if analysis_type not in supported_analysis_types:
@@ -365,9 +365,9 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
         self._json_dict['runs'][run_name]['analyses'][assay_type] = assay_data
 
     def add_sample_analysis(self, run_name: str, analysis_type: str, sample_name: str, sample_data: dict):
-        supported_assay_types = ['ic50_filtered']
+        supported_assay_types = ['ic50_filtered', 'mm_filtered']
         if analysis_type not in supported_assay_types:
-            raise HtbamDBException
+            raise HtbamDBException(f"Analysis type {analysis_type} not supported. Supported types: {supported_assay_types}")
         if analysis_type not in self._json_dict['runs'][run_name]['analyses'].keys():
             self._json_dict['runs'][run_name]['analyses'][analysis_type] = {'samples': {}}
 
@@ -403,6 +403,8 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
     def get_button_quant_data(self, chamber_idx, button_quant_type='summed_button_BGsub_Button_Quant'):
         return self._json_dict['button_quant'][chamber_idx][button_quant_type]
     
+    def get_concentration_units(self, run_name):
+        return self._json_dict['runs'][run_name]['conc_unit']
     def export_json(self):
         '''This writes the database to file, as a dict -> json'''
         with open('db.json', 'w') as fp:
