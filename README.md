@@ -2,7 +2,7 @@
 Duncan Muir & Nicholas Freitas  
 
 ___
-![BuildStatus](https://github.com/pinneylab/htbam_db_api/actions/workflows/ci.yml/badge.svg)
+![BuildStatus](https://github.com/pinneylab/htbam_db_api/workflows/Test/badge.svg)
 [![License: MIT](https://img.shields.io/badge/License-MIT-purple.svg)](https://opensource.org/licenses/MIT)
 [![codecov](https://codecov.io/gh/pinneylab/htbam_db_api/graph/badge.svg?token=QV5O4B8N63)](https://codecov.io/gh/pinneylab/htbam_db_api)
 

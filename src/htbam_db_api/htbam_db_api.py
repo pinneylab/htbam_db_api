@@ -78,6 +78,7 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
         unique_chambers = self._standard_src_data["standard_0"]["data"][['id','x_center_chamber', 'y_center_chamber', 'radius_chamber', 
         'xslice', 'yslice', 'indices']].drop_duplicates(subset=["indices"]).set_index("indices")
         self._json_dict = {"chamber_metadata": unique_chambers.to_dict("index")}
+        self._json_dict["runs"] = dict()
 
 
     def _load_std_data(self, run_name: str) -> None:
@@ -186,7 +187,7 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
             '''
             print('Warning: parsing concentration from string')
             #first, remove the unit and everything following
-            conc = conc_str.split(self._kinetic_units)[0]
+            conc = conc_str.split(self._kinetic_src_data[run_name]["conc_unit"])[0]
             #concentration number uses underscore as decimal point. Here, we replace and convert to a float:
             conc = float(conc.replace("_", "."))
             return conc
