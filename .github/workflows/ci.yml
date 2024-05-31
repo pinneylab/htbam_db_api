@@ -3,6 +3,7 @@ on:
   push:
     branches:
       - main
+      - feature/*
 env: # Or as an environment variable
       CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 jobs:
@@ -23,7 +24,7 @@ jobs:
           pip install .
       - name: Test with unittest
         run: | 
-          coverage run --source=htbam_db_api -m unittest test/test*.py
+          coverage run --source=src -m unittest test/test*.py
       - name: Upload coverage reports to Codecov
         run: | 
           curl -Os https://uploader.codecov.io/latest/linux/codecov
