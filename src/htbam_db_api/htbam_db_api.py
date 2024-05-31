@@ -5,6 +5,7 @@ import numpy as np
 import json
 from pathlib import Path
 import re
+from copy import deepcopy
 
 class AbstractHtbamDBAPI(ABC):
     def __init__(self):
@@ -126,14 +127,15 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
                 "time_s": squeezed.iloc[0]["time_s"],
                 "chambers": squeezed.drop(columns=["time_s", "indices"]).to_dict("index")}
             i += 1
-
-        self._json_dict["runs"] = {run_name: {
+        if "runs" not in self._json_dict:
+            self._json_dict["runs"] = {}
+        self._json_dict["runs"][run_name]= {
             "name": self._standard_src_data[run_name]["name"],
             "substrate": self._standard_src_data[run_name]["substrate"],
             "conc_unit": self._standard_src_data[run_name]["conc_unit"],
             "assays": std_assay_dict
             }
-        }
+    
 
     def _load_kinetic_data(self, run_name: str) -> None:
         '''
@@ -273,7 +275,7 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
             self._standard_src_data[f"standard_{stadard_run_num}"] = {"name": run_name, "substrate": run_substrate,
                                                     "conc_unit": run_units, "data": standard_df}
             self._load_std_data(f"standard_{stadard_run_num}")
-
+            print(f"Added run data to database.\n Run ID: standard_{stadard_run_num}\n Run name: {run_name}\n Run type: {run_type}\n Run substrate: {run_substrate}\n Run units: {run_units}")
         elif run_type == "kinetic":
             kinetic_run_num = len([key for key in self._json_dict['runs'].keys() if 'kinetic' in key])
             kinetic_df = pd.read_csv(data_path)
@@ -283,8 +285,10 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
                                                     "conc_unit": run_units, "data": kinetic_df}
             self._load_kinetic_data(f"kinetic_{kinetic_run_num}")
             self._load_button_quant_data(f"kinetic_{kinetic_run_num}")
+            print(f"Added run data to database.\n Run ID: kinetic_{kinetic_run_num} Run name: {run_name}\n Run type: {run_type}\n Run substrate: {run_substrate}\n Run units: {run_units}")
         else:
             raise HtbamDBException(f"Run type {run_type} not supported. Supported types: ['standard', 'kinetic']")
+        
         return
 
     def get_run_names(self):
@@ -444,6 +448,55 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
     
     def get_concentration_units(self, run_name):
         return self._json_dict['runs'][run_name]['conc_unit']
+    
+    def combine_runs(self, run_names: List[str]):
+
+        # check that all runs are of the same type
+        run_types = [run_name.split('_')[0] for run_name in run_names]
+        if len(set(run_types)) > 1:
+            raise HtbamDBException("Runs must be of the same type to be combined.")
+        
+        # check that all runs are of type 'kinetic'
+        if run_types[0] != 'kinetic':
+            raise HtbamDBException("Runs must be of type 'kinetic' to be combined.")
+        
+        # check that all runs are in the database
+        for run_name in run_names:
+            if run_name not in self._json_dict['runs'].keys():
+                raise HtbamDBException(f"Run {run_name} not found in database.")
+            
+        new_run_num = len([key for key in self._json_dict['runs'].keys() if 'kinetic' in key])
+        
+        new_run_dict = {}
+        for run_name in run_names:
+            if "linear_regression" not in new_run_dict.keys():
+                new_run_dict["linear_regression"] = deepcopy(self._json_dict['runs'][run_name]['analyses']['linear_regression'])
+            else:
+                for chamber_idx in self._json_dict['runs'][run_name]['analyses']['linear_regression']['chambers'].keys():
+                    for key, value in new_run_dict["linear_regression"]["chambers"][chamber_idx].items():
+                        
+                        if key == 'mask':
+                            continue
+                        new_run_dict["linear_regression"]["chambers"][chamber_idx][key] = np.concatenate([value, self._json_dict['runs'][run_name]['analyses']['linear_regression']['chambers'][chamber_idx][key]])
+                    #print(self._json_dict['runs'][run_name]['analyses']['linear_regression']['chambers'][chamber_idx])
+                    #new_run_dict["linear_regression"]["chambers"][chamber_idx] = np.concatenate(new_run_dict["linear_regression"]["chambers"][chamber_idx], self._json_dict['runs'][run_name]['analyses']['linear_regression']['chambers'][chamber_idx])
+            if "filtered_initial_rates" not in new_run_dict.keys():
+                new_run_dict["filtered_initial_rates"] = deepcopy(self._json_dict['runs'][run_name]['analyses']['filtered_initial_rates'])
+            elif len(new_run_dict["filtered_initial_rates"]["filters"]) != len(self._json_dict['runs'][run_name]['analyses']['filtered_initial_rates']['filters']):
+                raise HtbamDBException("Runs must have the same number of filters to be combined.")
+            else:
+                for i in range(len(new_run_dict["filtered_initial_rates"]["filters"])):
+                    new_run_dict["filtered_initial_rates"]["filters"][i] = np.concatenate([new_run_dict["filtered_initial_rates"]["filters"][i], 
+                                                                                           self._json_dict['runs'][run_name]['analyses']['filtered_initial_rates']['filters'][i]],
+                                                                                           axis=1)
+        self._json_dict['runs'][f'kinetic_{new_run_num}']= {"analyses": new_run_dict}
+        return f'kinetic_{new_run_num}'
+
+    def remove_run(self, run_name: str):
+        if run_name not in self._json_dict['runs'].keys():
+            raise HtbamDBException(f"Run {run_name} not found in database.")
+        del self._json_dict['runs'][run_name]     
+            
     def export_json(self):
         '''This writes the database to file, as a dict -> json'''
         with open('db.json', 'w') as fp:
