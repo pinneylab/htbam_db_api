@@ -89,3 +89,4 @@ coverage.svg
 
 build/
 dist/
+settings.json
