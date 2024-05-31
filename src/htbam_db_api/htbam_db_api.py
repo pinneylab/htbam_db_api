@@ -4,6 +4,8 @@ from typing import List, Tuple
 import numpy as np
 import json
 from pathlib import Path
+import re
+from copy import deepcopy
 
 class AbstractHtbamDBAPI(ABC):
     def __init__(self):
@@ -20,6 +22,7 @@ class AbstractHtbamDBAPI(ABC):
     # @abstractmethod
     # def create_analysis(self, run_name: str):
     #     raise NotImplementedError
+
 def _squeeze_df(df: pd.DataFrame, grouping_index: str, squeeze_targets: List[str]):
     '''
     Squeezes a dataframe along a given column to de-tidy the target data into lists.
@@ -39,26 +42,28 @@ def _squeeze_df(df: pd.DataFrame, grouping_index: str, squeeze_targets: List[str
 class LocalHtbamDBAPI(AbstractHtbamDBAPI):
    
 
-    def __init__(self, standard_curve_data_path: str, standard_name: str, standard_type: str, standard_units: str, kinetic_data_path: str, kinetic_name: str, kinetic_type: str, kinetic_units: str):
+    def __init__(self, standard_curve_data_path: str, standard_name: str, standard_substrate: str, standard_units: str,
+                  kinetic_data_path: str, kinetic_name: str, kinetic_substrate: str, kinetic_units: str):
         super().__init__()
         
-        self._standard_data = pd.read_csv(standard_curve_data_path)
-        self._standard_name = standard_name
-        self._standard_type = standard_type
-        self._standard_units = standard_units
-        self._standard_data['indices'] = self._standard_data.x.astype('str') + ',' + self._standard_data.y.astype('str')
-        
-        self._kinetic_data = pd.read_csv(kinetic_data_path)
-        self._kinetic_name = kinetic_name
-        self._kinetic_type = kinetic_type
-        self._kinetic_units = kinetic_units
-        self._kinetic_data['indices'] = self._kinetic_data.x.astype('str') + ',' + self._kinetic_data.y.astype('str')
+        standard_df = pd.read_csv(standard_curve_data_path)
+        standard_df['indices'] = standard_df.x.astype('str') + ',' + standard_df.y.astype('str')
 
+        self._standard_src_data = dict()
+        self._standard_src_data["standard_0"] = {"name": standard_name, "substrate": standard_substrate,
+                                                 "conc_unit": standard_units, "data": standard_df}
+    
+        kinetic_df = pd.read_csv(kinetic_data_path)
+        kinetic_df['indices'] = kinetic_df.x.astype('str') + ',' + kinetic_df.y.astype('str')
+        self._kinetic_src_data = dict()
+        self._kinetic_src_data["kinetic_0"] = {"name": kinetic_name, "substrate": kinetic_substrate,
+                                                 "conc_unit": kinetic_units, "data": kinetic_df}
+        
 
         self._init_json_dict()
-        self._load_std_data()
-        self._load_kinetic_data()
-        self._load_button_quant_data()
+        self._load_std_data("standard_0")
+        self._load_kinetic_data("kinetic_0")
+        self._load_button_quant_data("kinetic_0")
 
 
     def _init_json_dict(self) -> None:
@@ -71,12 +76,13 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
                 Returns:
                         None
         '''        
-        unique_chambers = self._standard_data[['id','x_center_chamber', 'y_center_chamber', 'radius_chamber', 
+        unique_chambers = self._standard_src_data["standard_0"]["data"][['id','x_center_chamber', 'y_center_chamber', 'radius_chamber', 
         'xslice', 'yslice', 'indices']].drop_duplicates(subset=["indices"]).set_index("indices")
         self._json_dict = {"chamber_metadata": unique_chambers.to_dict("index")}
+        self._json_dict["runs"] = dict()
 
 
-    def _load_std_data(self) -> None:
+    def _load_std_data(self, run_name: str) -> None:
         '''
         Populates an json_dict with standard curve data with the following schema:
         {standard_run_#: {
@@ -101,9 +107,19 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
                 Returns:
                         None
         '''
+        pattern = re.compile("^standard_[0-9]*$")
+
+        if not pattern.match(run_name):
+            raise HtbamDBException(f"Malformed run name: {run_name}")
+        if run_name not in self._standard_src_data.keys():
+            raise HtbamDBException(f"Run {run_name} not found in standard curve source data.")
+        if run_name in self._json_dict["runs"].keys():
+            raise HtbamDBException(f"Run {run_name} already exists in json_dict.")
+      
+
         i = 0    
         std_assay_dict = {}
-        for prod_conc, subset in self._standard_data.groupby("concentration_uM"):
+        for prod_conc, subset in self._standard_src_data[run_name]["data"].groupby("concentration_uM"):
             squeezed = _squeeze_df(subset, grouping_index="indices", squeeze_targets=['sum_chamber', 'std_chamber'])
             squeezed["time_s"] = pd.Series([[0]]*len(squeezed), index=squeezed.index) #this tomfoolery is used to create a list with a single value, 0, for the standard curve assays.
             std_assay_dict[i] = {
@@ -111,17 +127,17 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
                 "time_s": squeezed.iloc[0]["time_s"],
                 "chambers": squeezed.drop(columns=["time_s", "indices"]).to_dict("index")}
             i += 1
-
-        std_run_num = len([key for key in self._json_dict if "standard_" in key])
-        self._json_dict["runs"] = {f"standard_{std_run_num}": {
-            "name": self._standard_name,
-            "type": self._standard_type,
-            "conc_unit": self._standard_units,
+        if "runs" not in self._json_dict:
+            self._json_dict["runs"] = {}
+        self._json_dict["runs"][run_name]= {
+            "name": self._standard_src_data[run_name]["name"],
+            "substrate": self._standard_src_data[run_name]["substrate"],
+            "conc_unit": self._standard_src_data[run_name]["conc_unit"],
             "assays": std_assay_dict
             }
-        }
+    
 
-    def _load_kinetic_data(self) -> None:
+    def _load_kinetic_data(self, run_name: str) -> None:
         '''
         Populates an json_dict with kinetic data with the following schema:
         {kinetics_run_#: {
@@ -164,14 +180,6 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
                 Returns:
                         None
         '''    
-        # kin_dict = {}
-        # for sub_conc, subset in self._kinetic_data.groupby("series_index"):
-        #     squeezed = _squeeze_df(subset, grouping_index="indices", squeeze_targets=["time_s", "sum_chamber", "std_chamber"])
-        #     kin_dict[sub_conc] = {
-        #         "time_s": squeezed.iloc[0]["time_s"],
-        #         "chambers": squeezed.drop(columns=["time_s", "indices"]).to_dict("index")}
-            
-        # self._json_dict["kinetics"] = kin_dict
 
         def parse_concentration(conc_str: str):
             '''
@@ -181,15 +189,22 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
             '''
             print('Warning: parsing concentration from string')
             #first, remove the unit and everything following
-            conc = conc_str.split(self._kinetic_units)[0]
+            conc = conc_str.split(self._kinetic_src_data[run_name]["conc_unit"])[0]
             #concentration number uses underscore as decimal point. Here, we replace and convert to a float:
             conc = float(conc.replace("_", "."))
             return conc
-            
+        pattern = re.compile("^kinetic_[0-9]*$")
+
+        if not pattern.match(run_name):
+            raise HtbamDBException(f"Malformed run name: {run_name}")
+        if run_name not in self._kinetic_src_data.keys():
+            raise HtbamDBException(f"Run {run_name} not found in kinetic source data.")
+        if run_name in self._json_dict["runs"].keys():
+            raise HtbamDBException(f"Run {run_name} already exists in json_dict.")
 
         i = 0    
         kin_dict = {}
-        for sub_conc, subset in self._kinetic_data.groupby("series_index"):
+        for sub_conc, subset in self._kinetic_src_data[run_name]["data"].groupby("series_index"):
             squeezed = _squeeze_df(subset, grouping_index="indices", squeeze_targets=["time_s",'sum_chamber', 'std_chamber'])
             #squeezed["time_s"] = 0
             kin_dict[i] = {
@@ -198,19 +213,18 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
                 "chambers": squeezed.drop(columns=["time_s", "indices"]).to_dict("index")}
             i += 1
 
-        kinetics_run_num = len([key for key in self._json_dict if "kinetics_" in key])
         if "runs" not in self._json_dict:
             self._json_dict["runs"] = {}
-        self._json_dict["runs"][f"kinetics_{kinetics_run_num}"] = {
-            "name": self._kinetic_name,
-            "type": self._kinetic_type,
-            "conc_unit": self._kinetic_units,
+        self._json_dict["runs"][run_name] = {
+            "name": self._kinetic_src_data[run_name]["name"],
+            "substrate": self._kinetic_src_data[run_name]["substrate"],
+            "conc_unit": self._kinetic_src_data[run_name]["conc_unit"],
             "assays": kin_dict
         }
 
-    def _load_button_quant_data(self) -> None:
+    def _load_button_quant_data(self, run_name: str) -> None:
         '''
-        Populates an json_dict with kinetic data with the following schema:
+        Populates an json_dict with button quant data with the following schema:
         {button_quant: {
          
             1,1: {
@@ -227,7 +241,7 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
                         None
         ''' 
         try:   
-            unique_buttons = self._kinetic_data[["summed_button_Button_Quant","summed_button_BGsub_Button_Quant",
+            unique_buttons = self._kinetic_src_data[run_name]["data"][["summed_button_Button_Quant","summed_button_BGsub_Button_Quant",
             "std_button_Button_Quant", "indices"]].drop_duplicates(subset=["indices"]).set_index("indices")
         except KeyError:
             raise HtbamDBException("ButtonQuant columns not found in kinetic data.")
@@ -249,8 +263,37 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
             return s
         
         return recursive_string(self._json_dict, 0)
+    
+    def add_run_data(self, run_type: str, data_path: str, run_name: str, run_substrate: str, run_units: str):
+       
+        if run_type == "standard":
+            stadard_run_num = len([key for key in self._json_dict['runs'].keys() if 'standard' in key])
+            standard_df = pd.read_csv(data_path)
+            standard_df['indices'] = standard_df.x.astype('str') + ',' + standard_df.y.astype('str')
+
+            self._standard_src_data = dict()
+            self._standard_src_data[f"standard_{stadard_run_num}"] = {"name": run_name, "substrate": run_substrate,
+                                                    "conc_unit": run_units, "data": standard_df}
+            self._load_std_data(f"standard_{stadard_run_num}")
+            print(f"Added run data to database.\n Run ID: standard_{stadard_run_num}\n Run name: {run_name}\n Run type: {run_type}\n Run substrate: {run_substrate}\n Run units: {run_units}")
+        elif run_type == "kinetic":
+            kinetic_run_num = len([key for key in self._json_dict['runs'].keys() if 'kinetic' in key])
+            kinetic_df = pd.read_csv(data_path)
+            kinetic_df['indices'] = kinetic_df.x.astype('str') + ',' + kinetic_df.y.astype('str')
+            self._kinetic_src_data = dict()
+            self._kinetic_src_data[f"kinetic_{kinetic_run_num}"] = {"name": run_name, "substrate": run_substrate,
+                                                    "conc_unit": run_units, "data": kinetic_df}
+            self._load_kinetic_data(f"kinetic_{kinetic_run_num}")
+            self._load_button_quant_data(f"kinetic_{kinetic_run_num}")
+            print(f"Added run data to database.\n Run ID: kinetic_{kinetic_run_num} Run name: {run_name}\n Run type: {run_type}\n Run substrate: {run_substrate}\n Run units: {run_units}")
+        else:
+            raise HtbamDBException(f"Run type {run_type} not supported. Supported types: ['standard', 'kinetic']")
+        
+        return
+
     def get_run_names(self):
         return [key for key in self._json_dict['runs'].keys()]
+    
     def get_run_assay_data(self, run_name):
         '''This function takes as input an HTBAM Database object.
         For each kinetics run, we have 
@@ -405,6 +448,55 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
     
     def get_concentration_units(self, run_name):
         return self._json_dict['runs'][run_name]['conc_unit']
+    
+    def combine_runs(self, run_names: List[str]):
+
+        # check that all runs are of the same type
+        run_types = [run_name.split('_')[0] for run_name in run_names]
+        if len(set(run_types)) > 1:
+            raise HtbamDBException("Runs must be of the same type to be combined.")
+        
+        # check that all runs are of type 'kinetic'
+        if run_types[0] != 'kinetic':
+            raise HtbamDBException("Runs must be of type 'kinetic' to be combined.")
+        
+        # check that all runs are in the database
+        for run_name in run_names:
+            if run_name not in self._json_dict['runs'].keys():
+                raise HtbamDBException(f"Run {run_name} not found in database.")
+            
+        new_run_num = len([key for key in self._json_dict['runs'].keys() if 'kinetic' in key])
+        
+        new_run_dict = {}
+        for run_name in run_names:
+            if "linear_regression" not in new_run_dict.keys():
+                new_run_dict["linear_regression"] = deepcopy(self._json_dict['runs'][run_name]['analyses']['linear_regression'])
+            else:
+                for chamber_idx in self._json_dict['runs'][run_name]['analyses']['linear_regression']['chambers'].keys():
+                    for key, value in new_run_dict["linear_regression"]["chambers"][chamber_idx].items():
+                        
+                        if key == 'mask':
+                            continue
+                        new_run_dict["linear_regression"]["chambers"][chamber_idx][key] = np.concatenate([value, self._json_dict['runs'][run_name]['analyses']['linear_regression']['chambers'][chamber_idx][key]])
+                    #print(self._json_dict['runs'][run_name]['analyses']['linear_regression']['chambers'][chamber_idx])
+                    #new_run_dict["linear_regression"]["chambers"][chamber_idx] = np.concatenate(new_run_dict["linear_regression"]["chambers"][chamber_idx], self._json_dict['runs'][run_name]['analyses']['linear_regression']['chambers'][chamber_idx])
+            if "filtered_initial_rates" not in new_run_dict.keys():
+                new_run_dict["filtered_initial_rates"] = deepcopy(self._json_dict['runs'][run_name]['analyses']['filtered_initial_rates'])
+            elif len(new_run_dict["filtered_initial_rates"]["filters"]) != len(self._json_dict['runs'][run_name]['analyses']['filtered_initial_rates']['filters']):
+                raise HtbamDBException("Runs must have the same number of filters to be combined.")
+            else:
+                for i in range(len(new_run_dict["filtered_initial_rates"]["filters"])):
+                    new_run_dict["filtered_initial_rates"]["filters"][i] = np.concatenate([new_run_dict["filtered_initial_rates"]["filters"][i], 
+                                                                                           self._json_dict['runs'][run_name]['analyses']['filtered_initial_rates']['filters'][i]],
+                                                                                           axis=1)
+        self._json_dict['runs'][f'kinetic_{new_run_num}']= {"analyses": new_run_dict}
+        return f'kinetic_{new_run_num}'
+
+    def remove_run(self, run_name: str):
+        if run_name not in self._json_dict['runs'].keys():
+            raise HtbamDBException(f"Run {run_name} not found in database.")
+        del self._json_dict['runs'][run_name]     
+            
     def export_json(self):
         '''This writes the database to file, as a dict -> json'''
         with open('db.json', 'w') as fp:
