@@ -386,7 +386,7 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
 
     def add_analysis(self, run_name, analysis_type, chamber_idx, analysis_data):
     
-        supported_analysis_types = ['linear_regression', 'ic50_raw', 'mm_raw']
+        supported_analysis_types = ['linear_regression', 'ic50_raw', 'mm_raw', 'bgsub_linear_regression']
         self._init_analysis(run_name)
 
         if analysis_type not in supported_analysis_types:
@@ -495,8 +495,13 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
     def remove_run(self, run_name: str):
         if run_name not in self._json_dict['runs'].keys():
             raise HtbamDBException(f"Run {run_name} not found in database.")
-        del self._json_dict['runs'][run_name]     
-            
+        del self._json_dict['runs'][run_name]   
+
+    def remove_analysis(self, run_name: str, analysis_type: str):
+        if analysis_type not in self._json_dict['runs'][run_name]['analyses'].keys():
+            raise HtbamDBException(f"Analysis {analysis_type} not found in database.")
+        del self._json_dict['runs'][run_name]['analyses'][analysis_type]  
+         
     def export_json(self):
         '''This writes the database to file, as a dict -> json'''
         with open('db.json', 'w') as fp:
