@@ -11,6 +11,23 @@ class AbstractHtbamDBAPI(ABC):
     def __init__(self):
         pass
 
+    def _init_json_dict(self) -> None:
+        '''
+        Populates an initial dictionary with chamber specific metadata.
+
+                Parameters:
+                        None
+
+                Returns:
+                        None
+        '''        
+        unique_chambers = self._standard_src_data["standard_0"]["data"][['id','x_center_chamber', 'y_center_chamber', 'radius_chamber', 
+        'xslice', 'yslice', 'indices']].drop_duplicates(subset=["indices"]).set_index("indices")
+        self._json_dict = {"chamber_metadata": unique_chambers.to_dict("index")}
+        self._json_dict["runs"] = dict()
+
+
+
     # @abstractmethod
     # def get_standard_data(self, standard_name: str) -> Tuple[List[float], np.ndarray]:
     #     raise NotImplementedError
@@ -39,6 +56,7 @@ def _squeeze_df(df: pd.DataFrame, grouping_index: str, squeeze_targets: List[str
                                         index=[grouping_index] + squeeze_targets)
     return df.groupby(grouping_index).apply(squeeze_func)
 
+
 class LocalHtbamDBAPI(AbstractHtbamDBAPI):
    
 
@@ -59,27 +77,10 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
         self._kinetic_src_data["kinetic_0"] = {"name": kinetic_name, "substrate": kinetic_substrate,
                                                  "conc_unit": kinetic_units, "data": kinetic_df}
         
-
         self._init_json_dict()
         self._load_std_data("standard_0")
         self._load_kinetic_data("kinetic_0")
         self._load_button_quant_data("kinetic_0")
-
-
-    def _init_json_dict(self) -> None:
-        '''
-        Populates an initial dictionary with chamber specific metadata.
-
-                Parameters:
-                        None
-
-                Returns:
-                        None
-        '''        
-        unique_chambers = self._standard_src_data["standard_0"]["data"][['id','x_center_chamber', 'y_center_chamber', 'radius_chamber', 
-        'xslice', 'yslice', 'indices']].drop_duplicates(subset=["indices"]).set_index("indices")
-        self._json_dict = {"chamber_metadata": unique_chambers.to_dict("index")}
-        self._json_dict["runs"] = dict()
 
 
     def _load_std_data(self, run_name: str) -> None:
@@ -506,6 +507,64 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
         '''This writes the database to file, as a dict -> json'''
         with open('db.json', 'w') as fp:
             json.dump(self._json_dict, fp, indent=4)
+
+
+def load_button_quant_data(button_quant_src_data):
+    button_quant_dict = {
+        'chambers': button_quant_src_data.set_index('indices')[['summed_button_BGsub']].to_dict('index')
+    }
+    return button_quant_dict
+
+
+def load_binding_data(bait_src_data, prey_src_data):
+
+    binding_dict = {}
+    for i, ((conc, bait_subset), (_conc, prey_subset)) in enumerate(zip(bait_src_data.groupby('time_s'), prey_src_data.groupby('time_s'))):
+
+        prewash_bait_squeezed = _squeeze_df(bait_subset[bait_subset['series_index'] == 'pre_wash_bait'], grouping_index='indices', squeeze_targets=['summed_button_BGsub'])
+        postwash_bait_squeezed = _squeeze_df(bait_subset[bait_subset['series_index'] == 'post_wash_bait'], grouping_index='indices', squeeze_targets=['summed_button_BGsub'])
+        prey_squeezed = _squeeze_df(prey_subset, grouping_index='indices', squeeze_targets=['summed_button_BGsub'])
+
+        prey_squeezed.rename(columns={'summed_button_BGsub': 'post_wash_prey_intensity'}, inplace=True)
+        prey_squeezed['pre_wash_bait_intensity'] = prewash_bait_squeezed['summed_button_BGsub']
+        prey_squeezed['post_wash_bait_intensity'] = postwash_bait_squeezed['summed_button_BGsub']
+        prey_squeezed['r'] = [[prey_squeezed['post_wash_prey_intensity'].iloc[i][0] / prey_squeezed['post_wash_bait_intensity'].iloc[i][0]] for i in range(len(prey_squeezed))]
+
+        binding_dict[i] = {
+            'conc': conc,
+            'time_s': [0],
+            'chambers': prey_squeezed.drop(columns=['indices']).to_dict('index')
+        }
+
+    return binding_dict
+
+
+def add_indices_col(df):
+    df['indices'] = df.x.astype('str') + ',' + df.y.astype('str')
+    return df
+
+
+class BindingDBAPI(AbstractHtbamDBAPI):
+
+    def __init__(self, button_quant_path: str, bait_data_path: str, prey_data_path: str):
+        
+        super().__init__()
+
+        self._button_quant_src_data = add_indices_col(pd.read_csv(button_quant_path))
+        self._bait_src_data = add_indices_col(pd.read_csv(bait_data_path))
+        self._prey_src_data = add_indices_col(pd.read_csv(prey_data_path))
+
+        self._init_json_dict(self._button_quant_src_data)
+        self._json_dict['button_quant'] = load_button_quant_data(self._button_quant_src_data)
+        self._json_dict['runs']['binding_0'] = load_binding_data(self._bait_src_data, self._prey_src_data)
+
+
+    def _init_json_dict(self, button_quant_src_data):
+        self._json_dict = {}
+        self._json_dict['chamber_metadata'] = button_quant_src_data.set_index('indices')[['id', 'xslice', 'yslice']].to_dict('index')
+        self._json_dict["runs"] = dict()
+
+
 
 class HtbamDBException(Exception):
     pass
