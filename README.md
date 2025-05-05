@@ -3,8 +3,9 @@ Duncan Muir & Nicholas Freitas
 
 ___
 ![BuildStatus](https://github.com/pinneylab/htbam_db_api/workflows/Test/badge.svg)
+![PyPI - Python Version](https://img.shields.io/badge/python-3.9%20%7C%203.10-blue)
 [![License: MIT](https://img.shields.io/badge/License-MIT-purple.svg)](https://opensource.org/licenses/MIT)
-[![codecov](https://codecov.io/github/pinneylab/htbam_db_api/graph/badge.svg?token=QV5O4B8N63)](https://codecov.io/github/pinneylab/htbam_db_api)
+[![Coverage Status](https://coveralls.io/repos/github/pinneylab/htbam_db_api/badge.svg?branch=main)](https://coveralls.io/github/pinneylab/htbam_db_api?branch=main)
 
 
 ## Overview
