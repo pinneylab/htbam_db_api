@@ -46,6 +46,10 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
                   kinetic_data_path: str, kinetic_name: str, kinetic_substrate: str, kinetic_units: str):
         super().__init__()
         
+        # Verify that the files exist
+        self._verify_file_exists(standard_curve_data_path)
+        self._verify_file_exists(kinetic_data_path)
+
         standard_df = pd.read_csv(standard_curve_data_path)
         standard_df['indices'] = standard_df.x.astype('str') + ',' + standard_df.y.astype('str')
 
@@ -65,6 +69,40 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
         self._load_kinetic_data("kinetic_0")
         self._load_button_quant_data("kinetic_0")
 
+    def _verify_file_exists(self, file_path: str) -> None:
+        '''
+        Verifies that a file exists at the given path.
+        Returns an informative Error message if not.
+
+                Parameters:
+                        file_path (str): Path to the file
+
+                Returns:
+                        None
+        '''
+
+        # exists?
+        if Path(file_path).is_file():
+            return True
+
+        # if not, check if the parent file even exists
+        parent_file_exists = False
+        parent_file_contents = []
+
+        parent_file = Path(file_path).parent
+
+        while not parent_file_exists and parent_file != Path('/'):
+            if Path(parent_file).exists():
+                parent_file_exists = True
+                parent_file_contents = [str(f) for f in Path(parent_file).iterdir() if f.is_file()]
+            else:
+                parent_file = parent_file.parent
+        
+        if not parent_file_exists:
+            raise HtbamDBException(f"File {file_path} does not exist. We cannot find any files matching the path provided")
+        else:
+            raise HtbamDBException(f"File {file_path} does not exist. We found the parent file {parent_file} but it does not contain the file you requested.\n \
+                                   We found the following files in the parent directory:\n" + "\n".join(parent_file_contents))
 
     def _init_json_dict(self) -> None:
         '''
@@ -249,17 +287,29 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
 
     def __repr__(self) -> str:
         def recursive_string(d: dict, indent: int, width=5) -> str:
-            s = "\t"*indent + '{\n'
+            s = ""
+
+            # How many keys are in the dictionary?
+            num_keys = len(d)
+
+            # If there are more than 20 keys, we're in a data-dense region. Let's only show the first 5.
+            if num_keys > 20: 
+                truncate=True 
+            else: 
+                truncate=False
+
             for i, (key, value) in enumerate(d.items()):
-                if i == width:
-                    s += "\t"*indent +"...\n"
+                if i > 5 and truncate:
+                    s += "\t" * indent + "...\n"
                     break
-                s += "\t"*indent + f"{key}: "
+                s += "\t" * indent + str(key) + ": "
                 if isinstance(value, dict):
-                    s += "\n" + recursive_string(value, indent+1)
+                    s += "\n" + recursive_string(value, indent + 1)
                 else:
-                    s += f"{value}\n"
-            s += "\t"*indent + '}\n'
+                    value_str = str(value)
+                    if len(value_str) > 20:
+                        value_str = value_str[:20] + "..."
+                    s += value_str + "\n"
             return s
         
         return recursive_string(self._json_dict, 0)
@@ -293,6 +343,17 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
 
     def get_run_names(self):
         return [key for key in self._json_dict['runs'].keys()]
+    
+    def get_data(self, run_name):
+        '''
+        This function takes as input an HTBAM Database object.
+        For each kinetics run, we have 
+        It returns a dictionary, with single-axis data describing the chamber IDs, time points, concentation_data, and other independent variables.
+        The dictionary also contains a multi-axis array describing the raw data (usually luminance) for each chamber.
+        
+        This will superceed the get_run_assay_data function, by generalizing to both runs and analyzed data.
+        '''
+        pass
     
     def get_run_assay_data(self, run_name):
         '''This function takes as input an HTBAM Database object.
