@@ -7,6 +7,31 @@ from pathlib import Path
 import re
 from copy import deepcopy
 
+DATA_TYPE_STRUCTURE = {
+    "standard": 
+        {"conc_label": "concentration_uM",
+         "luminance_label": "sum_chamber",
+         "time_label": "time_s"},
+    "kinetic": 
+        {"conc_label": "series_index",
+         "luminance_label": "sum_chamber",
+         "time_label": "time_s"},
+    "binding":
+        {"conc_label": None}
+}
+
+def parse_concentration(conc_str: str, unit_name: str) -> float:
+            '''
+            Currently, we're storing substrate concentration as a string in the kinetics data.
+            This will be changed in the future to store as a float + unit as a string. For now,
+            we will parse jankily.
+            '''
+            #first, remove the unit and everything following
+            conc = conc_str.split(unit_name)[0]
+            #concentration number uses underscore as decimal point. Here, we replace and convert to a float:
+            conc = float(conc.replace("_", "."))
+            return conc
+
 class AbstractHtbamDBAPI(ABC):
     def __init__(self):
         pass
@@ -61,6 +86,11 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
         
 
         self._init_json_dict()
+        # self._load_data("standard_0")
+        # self._load_data("kinetic_0")
+        # self._load_data("binding_0")
+
+        return
         self._load_std_data("standard_0")
         self._load_kinetic_data("kinetic_0")
         self._load_button_quant_data("kinetic_0")
@@ -81,45 +111,83 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
         self._json_dict = {"chamber_metadata": unique_chambers.to_dict("index")}
         self._json_dict["runs"] = dict()
 
+    def load_run_from_csv(self,
+                          csv_path: str, 
+                          run_type: str,
+                          conc_unit_str: str) -> None:
+        
+        # confirm run_type is valid
+        assert run_type in DATA_TYPE_STRUCTURE.keys(), f"Invalid run type: {run_type}. Must be one of {VALID_DATA_TYPES}."
 
-    def _load_std_data(self, run_name: str) -> None:
-        '''
-        Populates an json_dict with standard curve data with the following schema:
-        {standard_run_#: {
-            name: str,
-            type: str,
-            conc_unit: str,
-            assays: {
-                1: {
-                    conc: float,
-                    _s: [0],time
-                    chambers: {
-                        1,1: {
-                            sum_chamber: [...],
-                            std_chamber: [...]
-                        },
-                        ...
-                        }}}}
+        # get run_type specific data structure
+        run_structure = DATA_TYPE_STRUCTURE[run_type]
 
-                Parameters:
-                        None
+        # generate run name
+        run_num = len([key for key in self._json_dict['runs'].keys() if 'run_type' in key])
+        run_name = f"{run_type}_{run_num}"
 
-                Returns:
-                        None
-        '''
-        pattern = re.compile("^standard_[0-9]*$")
-
+        # validate run name
+        dtype_string = "|".join(DATA_TYPE_STRUCTURE.keys())
+        pattern = re.compile(f"^({dtype_string})_[0-9]*$")
         if not pattern.match(run_name):
             raise HtbamDBException(f"Malformed run name: {run_name}")
-        if run_name not in self._standard_src_data.keys():
-            raise HtbamDBException(f"Run {run_name} not found in standard curve source data.")
         if run_name in self._json_dict["runs"].keys():
             raise HtbamDBException(f"Run {run_name} already exists in json_dict.")
-      
+        
+        # read in dataframe
+        df = pd.read_csv(csv_path)
+        df['indices'] = df.x.astype('str') + ',' + df.y.astype('str')
+        print(df["time_s"].unique())
+        # get and check chamber count
+        num_chambers = len(df['indices'].unique())
+        assert num_chambers == 1792, "yo this should probably be 1792... but if you're really sure it shouldn't be ask freitas"
+        
+        # validate data structure, parse concentration, add time_s column if not present
+        for key, value in run_structure.items():
+            # TODO: load bearing file names... sad... we should fix these eventually
+            if key == "conc_label":
+                # parse for concentration
+                print('Warning: parsing concentration from string')
+                print("This will look like:")
+                print(df[value][0], "->", parse_concentration(df[value][0], conc_unit_str))
+                df[value] = df[value].apply(lambda x: parse_concentration(x, conc_unit_str))
+            elif value in df.columns:
+                pass
+            elif key == "time_label":
+                # if time_s is not in the dataframe, create it
+                df[value] = pd.Series([0]*len(df), index=df.index)
+            else:
+                raise HtbamDBException(f"Column {value} not found in dataframe.")
+        
+        
+        # TODO: i am worried we will lose chamber ordering somewhere in here,
+        #       so we should make sure we track that somehow
 
-        i = 0    
+        ind_var_vals = []
+        dep_var_arrs = []
+
+        # TODO: i think this groupby call can be flexible (i.e., we could make it a specifiable list)
+        for ind_vars, subset in df.groupby([run_structure["time_label"], run_structure["conc_label"]], sort=True):
+            
+            ind_var_vals.append(list(ind_vars))
+
+            # TODO: luminance label could easily be changed to a list of labels, maybe we should
+            #       do that for forward compatibility
+            dep_var_arrs.append(subset[run_structure["luminance_label"]].to_numpy())
+
+        dep_var_arrs = np.array(dep_var_arrs).T
+        ind_var_vals = np.array(ind_var_vals)
+
+        for i in range(ind_var_vals.shape[-1]):
+            print(np.unique(ind_var_vals[:,i]))
+        print(ind_var_vals)
+        #print(np.array(ind_var_vals))
+        print(dep_var_arrs.shape)
+        # for conc, subset in df.groupby(run_structure["conc_label"], sort=True):
+        #     print("#####\n",conc,"\n","#####\n", subset)
+        return  
         std_assay_dict = {}
-        for prod_conc, subset in self._standard_src_data[run_name]["data"].groupby("concentration_uM"):
+        for prod_conc, subset in df.groupby("concentration_uM"):
             squeezed = _squeeze_df(subset, grouping_index="indices", squeeze_targets=['sum_chamber', 'std_chamber'])
             squeezed["time_s"] = pd.Series([[0]]*len(squeezed), index=squeezed.index) #this tomfoolery is used to create a list with a single value, 0, for the standard curve assays.
             std_assay_dict[i] = {
@@ -127,6 +195,8 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
                 "time_s": squeezed.iloc[0]["time_s"],
                 "chambers": squeezed.drop(columns=["time_s", "indices"]).to_dict("index")}
             i += 1
+        print(std_assay_dict)
+        return
         if "runs" not in self._json_dict:
             self._json_dict["runs"] = {}
         self._json_dict["runs"][run_name]= {
@@ -135,92 +205,137 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
             "conc_unit": self._standard_src_data[run_name]["conc_unit"],
             "assays": std_assay_dict
             }
+
+
+    # def _load_std_data(self, run_name: str) -> None:
+    #     '''
+    #     Populates an json_dict with standard curve data with the following schema:
+    #     {standard_run_#: {
+    #         name: str,
+    #         type: str,
+    #         conc_unit: str,
+    #         assays: {
+    #             1: {
+    #                 conc: float,
+    #                 _s: [0],time
+    #                 chambers: {
+    #                     1,1: {
+    #                         sum_chamber: [...],
+    #                         std_chamber: [...]
+    #                     },
+    #                     ...
+    #                     }}}}
+
+    #             Parameters:
+    #                     None
+
+    #             Returns:
+    #                     None
+    #     '''
+    #     pattern = re.compile("^standard_[0-9]*$")
+
+    #     if not pattern.match(run_name):
+    #         raise HtbamDBException(f"Malformed run name: {run_name}")
+    #     if run_name not in self._standard_src_data.keys():
+    #         raise HtbamDBException(f"Run {run_name} not found in standard curve source data.")
+    #     if run_name in self._json_dict["runs"].keys():
+    #         raise HtbamDBException(f"Run {run_name} already exists in json_dict.")
+      
+
+    #     i = 0    
+    #     std_assay_dict = {}
+    #     for prod_conc, subset in self._standard_src_data[run_name]["data"].groupby("concentration_uM"):
+    #         squeezed = _squeeze_df(subset, grouping_index="indices", squeeze_targets=['sum_chamber', 'std_chamber'])
+    #         squeezed["time_s"] = pd.Series([[0]]*len(squeezed), index=squeezed.index) #this tomfoolery is used to create a list with a single value, 0, for the standard curve assays.
+    #         std_assay_dict[i] = {
+    #             "conc": prod_conc,
+    #             "time_s": squeezed.iloc[0]["time_s"],
+    #             "chambers": squeezed.drop(columns=["time_s", "indices"]).to_dict("index")}
+    #         i += 1
+    #     print(std_assay_dict)
+    #     if "runs" not in self._json_dict:
+    #         self._json_dict["runs"] = {}
+    #     self._json_dict["runs"][run_name]= {
+    #         "name": self._standard_src_data[run_name]["name"],
+    #         "substrate": self._standard_src_data[run_name]["substrate"],
+    #         "conc_unit": self._standard_src_data[run_name]["conc_unit"],
+    #         "assays": std_assay_dict
+    #         }
     
 
-    def _load_kinetic_data(self, run_name: str) -> None:
-        '''
-        Populates an json_dict with kinetic data with the following schema:
-        {kinetics_run_#: {
-            name: str,
-            type: str,
-            conc_unit: str,
-            assays: {
-                1: {
-                    conc: float,
-                    time_s: [0],
-                    chambers: {
-                        1,1: {
-                            sum_chamber: [...],
-                            std_chamber: [...]
-                        },
-                        ...
-                        }}}}
+    # def _load_kinetic_data(self, run_name: str) -> None:
+    #     '''
+    #     Populates an json_dict with kinetic data with the following schema:
+    #     {kinetics_run_#: {
+    #         name: str,
+    #         type: str,
+    #         conc_unit: str,
+    #         assays: {
+    #             1: {
+    #                 conc: float,
+    #                 time_s: [0],
+    #                 chambers: {
+    #                     1,1: {
+    #                         sum_chamber: [...],
+    #                         std_chamber: [...]
+    #                     },
+    #                     ...
+    #                     }}}}
 
-                Parameters:
-                        None
+    #             Parameters:
+    #                     None
 
-                Returns:
-                        None
+    #             Returns:
+    #                     None
         
                         
-        {kintetcs: {
-            substrate_conc: {
-                time_s: [0,1, ...],
-                chambers: {
-                    1,1: {
-                        sum_chamber: [...],
-                        std_chamber: [...]
-                    },
-                    ...
-                    }}}}
+    #     {kintetcs: {
+    #         substrate_conc: {
+    #             time_s: [0,1, ...],
+    #             chambers: {
+    #                 1,1: {
+    #                     sum_chamber: [...],
+    #                     std_chamber: [...]
+    #                 },
+    #                 ...
+    #                 }}}}
 
-                Parameters:
-                        None
+    #             Parameters:
+    #                     None
 
-                Returns:
-                        None
-        '''    
+    #             Returns:
+    #                     None
+    #     '''    
 
-        def parse_concentration(conc_str: str):
-            '''
-            Currently, we're storing substrate concentration as a string in the kinetics data.
-            This will be changed in the future to store as a float + unit as a string. For now,
-            we will parse jankily.
-            '''
-            print('Warning: parsing concentration from string')
-            #first, remove the unit and everything following
-            conc = conc_str.split(self._kinetic_src_data[run_name]["conc_unit"])[0]
-            #concentration number uses underscore as decimal point. Here, we replace and convert to a float:
-            conc = float(conc.replace("_", "."))
-            return conc
-        pattern = re.compile("^kinetic_[0-9]*$")
+       
+    #     pattern = re.compile("^kinetic_[0-9]*$")
 
-        if not pattern.match(run_name):
-            raise HtbamDBException(f"Malformed run name: {run_name}")
-        if run_name not in self._kinetic_src_data.keys():
-            raise HtbamDBException(f"Run {run_name} not found in kinetic source data.")
-        if run_name in self._json_dict["runs"].keys():
-            raise HtbamDBException(f"Run {run_name} already exists in json_dict.")
+    #     if not pattern.match(run_name):
+    #         raise HtbamDBException(f"Malformed run name: {run_name}")
+    #     if run_name not in self._kinetic_src_data.keys():
+    #         raise HtbamDBException(f"Run {run_name} not found in kinetic source data.")
+    #     if run_name in self._json_dict["runs"].keys():
+    #         raise HtbamDBException(f"Run {run_name} already exists in json_dict.")
 
-        i = 0    
-        kin_dict = {}
-        for sub_conc, subset in self._kinetic_src_data[run_name]["data"].groupby("series_index"):
-            squeezed = _squeeze_df(subset, grouping_index="indices", squeeze_targets=["time_s",'sum_chamber', 'std_chamber'])
-            #squeezed["time_s"] = 0
-            kin_dict[i] = {
-                "conc": parse_concentration(sub_conc),
-                "time_s": squeezed.iloc[0]["time_s"],
-                "chambers": squeezed.drop(columns=["time_s", "indices"]).to_dict("index")}
-            i += 1
+    #     i = 0    
+    #     kin_dict = {}
+    #     for sub_conc, subset in self._kinetic_src_data[run_name]["data"].groupby("series_index"):
+    #         squeezed = _squeeze_df(subset, grouping_index="indices", squeeze_targets=["time_s",'sum_chamber', 'std_chamber'])
+    #         #squeezed["time_s"] = 0
+    #         kin_dict[i] = {
+    #             "conc": parse_concentration(sub_conc),
+    #             "time_s": squeezed.iloc[0]["time_s"],
+    #             "chambers": squeezed.drop(columns=["time_s", "indices"]).to_dict("index")}
+    #         i += 1
 
-        if "runs" not in self._json_dict:
-            self._json_dict["runs"] = {}
-        self._json_dict["runs"][run_name] = {
-            "name": self._kinetic_src_data[run_name]["name"],
-            "substrate": self._kinetic_src_data[run_name]["substrate"],
-            "conc_unit": self._kinetic_src_data[run_name]["conc_unit"],
-            "assays": kin_dict
-        }
+    #     if "runs" not in self._json_dict:
+    #         self._json_dict["runs"] = {}
+    #     self._json_dict["runs"][run_name] = {
+    #         "name": self._kinetic_src_data[run_name]["name"],
+    #         "substrate": self._kinetic_src_data[run_name]["substrate"],
+    #         "conc_unit": self._kinetic_src_data[run_name]["conc_unit"],
+    #         "assays": kin_dict
+    #     }
 
     def _load_button_quant_data(self, run_name: str) -> None:
         '''
@@ -379,6 +494,85 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
         luminance_data = luminance_data[:,:,sorting_idxs]
         
         return chamber_idxs, luminance_data, conc_data, time_data
+    
+    def get_entity_data(self, entity_name: str):
+        chamber_idxs = np.array(list(self._json_dict['chamber_metadata'].keys()))
+        luminance_data = None
+        time_data = None
+        conc_data = np.array([])
+
+        #Each assay may have recorded a different # of time points.
+        #First, we'll just check what the max # of time points is:
+        time_dict = self._get_entity_independent_data(entity_name, 'time_s')
+        max_time_points = max([len(v) for v in time_dict.values()])
+        
+        # for assay in self._json_dict["runs"][entity_name]['assays'].keys():
+        #     current_assay_time_points = len(np.array(self._json_dict["runs"][entity_name]['assays'][assay]['time_s']))
+        #     if current_assay_time_points > max_time_points:
+        #         max_time_points = current_assay_time_points
+
+        for assay in self._json_dict["runs"][entity_name]['assays'].keys():
+            
+            #to make things easier later, we'll be sorting the datapoints by time value.
+            #Get time data:
+            #collect from DB
+            current_time_array = np.array(self._json_dict["runs"][entity_name]['assays'][assay]['time_s'])
+            current_time_array = current_time_array.astype(float) #so we can pad with NaNs
+            #pad the array with NaNs if there are fewer time points than the max
+            current_time_array = np.pad(current_time_array, (0, max_time_points - len(current_time_array)), 'constant', constant_values=np.nan)
+            #sort, and capture sorting idxs:
+            sorting_idxs = np.argsort(current_time_array)
+            current_time_array = current_time_array[sorting_idxs]
+            current_time_array = np.expand_dims(current_time_array, axis=1)
+            #add to our dataset
+            if time_data is None:
+                time_data = current_time_array
+            else:
+                time_data = np.concatenate([time_data, current_time_array], axis=1)
+
+            #Get luminance data:
+            current_luminance_array = None
+            for chamber_idx in chamber_idxs:
+                #collect from DB
+                current_chamber_array = np.array(self._json_dict["runs"][entity_name]['assays'][assay]['chambers'][chamber_idx]['sum_chamber'])
+                #set type to float:
+                current_chamber_array = current_chamber_array.astype(float)
+                #pad the array with NaNs if there are fewer time points than the max
+                current_chamber_array = np.pad(current_chamber_array, (0, max_time_points - len(current_chamber_array)), 'constant', constant_values=np.nan)
+                #sort by time:
+                current_chamber_array = current_chamber_array[sorting_idxs]
+                #add a dimension at the end:
+                current_chamber_array = np.expand_dims(current_chamber_array, axis=1)
+
+                if current_luminance_array is None:
+                    current_luminance_array = current_chamber_array
+                else:
+                    current_luminance_array = np.concatenate([current_luminance_array, current_chamber_array], axis=1)
+            #add a dimension at the end:
+            current_luminance_array = np.expand_dims(current_luminance_array, axis=2)
+            #add to our dataset
+            if luminance_data is None:
+                luminance_data = current_luminance_array
+            else:
+                luminance_data = np.concatenate([luminance_data, current_luminance_array], axis=2)
+            
+            #Get concentration data:
+            #collect from DB
+            current_conc = self._json_dict["runs"][entity_name]['assays'][assay]['conc']
+            conc_data = np.append(conc_data, current_conc)
+
+        #sort once more, by conc_data:
+        sorting_idxs = np.argsort(conc_data)
+        conc_data = conc_data[sorting_idxs]
+
+        #sort luminance data by conc_data:
+        luminance_data = luminance_data[:,:,sorting_idxs]
+        
+        return chamber_idxs, luminance_data, conc_data, time_data
+    
+    def _get_entity_independent_data(self, entity_name: str, ind_variable_name):
+        assays = self._json_dict["runs"][entity_name]['assays'].items()
+        return {k: v[ind_variable_name] for k, v in assays}
     
     def _init_analysis(self, run_name):
         if 'analyses' not in self._json_dict['runs'][run_name].keys():
