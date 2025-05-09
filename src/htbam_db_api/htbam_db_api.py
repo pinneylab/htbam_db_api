@@ -68,21 +68,21 @@ class AbstractHtbamDBAPI(ABC):
     # def create_analysis(self, run_name: str):
     #     raise NotImplementedError
 
-def _squeeze_df(df: pd.DataFrame, grouping_index: str, squeeze_targets: List[str]):
-    '''
-    Squeezes a dataframe along a given column to de-tidy the target data into lists.
+# def _squeeze_df(df: pd.DataFrame, grouping_index: str, squeeze_targets: List[str]):
+#     '''
+#     Squeezes a dataframe along a given column to de-tidy the target data into lists.
 
-            Parameters:
-                    grouping_index (str): Aggregation column name
-                    squeeze_targets ([str]): List of columns to reduce values to lists
+#             Parameters:
+#                     grouping_index (str): Aggregation column name
+#                     squeeze_targets ([str]): List of columns to reduce values to lists
 
-            Returns:
-                    sqeeuzed_df (pd.DataFrame): DF with columns == [grouping_index, *squeeze_targets]
-    '''
+#             Returns:
+#                     sqeeuzed_df (pd.DataFrame): DF with columns == [grouping_index, *squeeze_targets]
+#     '''
 
-    squeeze_func = lambda x : pd.Series([x[grouping_index].values[0]] + [x[col].tolist() for col in squeeze_targets], 
-                                        index=[grouping_index] + squeeze_targets)
-    return df.groupby(grouping_index).apply(squeeze_func)
+#     squeeze_func = lambda x : pd.Series([x[grouping_index].values[0]] + [x[col].tolist() for col in squeeze_targets], 
+#                                         index=[grouping_index] + squeeze_targets)
+#     return df.groupby(grouping_index).apply(squeeze_func)
 
 class LocalHtbamDBAPI(AbstractHtbamDBAPI):
    
@@ -90,45 +90,86 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
     def __init__(self, standard_curve_data_path: str, standard_name: str, standard_substrate: str, standard_units: str,
                   kinetic_data_path: str, kinetic_name: str, kinetic_substrate: str, kinetic_units: str):
         super().__init__()
-        
-        standard_df = pd.read_csv(standard_curve_data_path)
-        standard_df['indices'] = standard_df.x.astype('str') + ',' + standard_df.y.astype('str')
 
-        self._standard_src_data = dict()
-        self._standard_src_data["standard_0"] = {"name": standard_name, "substrate": standard_substrate,
-                                                 "conc_unit": standard_units, "data": standard_df}
+        # Verify that the files exist
+        self._verify_file_exists(standard_curve_data_path)
+        self._verify_file_exists(kinetic_data_path)
+        
+        # The data is in format 'kinetics' for both standard curve and kinetics.
+        standard_data = self.load_run_from_csv(standard_curve_data_path, 'kinetics', standard_units)
+        kinetics_data = self.load_run_from_csv(kinetic_data_path, 'kinetics', kinetic_units)
+
+        #standard_df = pd.read_csv(standard_curve_data_path)
+        #standard_df['indices'] = standard_df.x.astype('str') + ',' + standard_df.y.astype('str')
+
+        #self._standard_src_data = dict()
+        #self._standard_src_data["standard_0"] = {"name": standard_name, "substrate": standard_substrate,
+        #                                         "conc_unit": standard_units, "data": standard_df}
     
-        kinetic_df = pd.read_csv(kinetic_data_path)
-        kinetic_df['indices'] = kinetic_df.x.astype('str') + ',' + kinetic_df.y.astype('str')
-        self._kinetic_src_data = dict()
-        self._kinetic_src_data["kinetic_0"] = {"name": kinetic_name, "substrate": kinetic_substrate,
-                                                 "conc_unit": kinetic_units, "data": kinetic_df}
+        #kinetic_df = pd.read_csv(kinetic_data_path)
+        #kinetic_df['indices'] = kinetic_df.x.astype('str') + ',' + kinetic_df.y.astype('str')
+        #self._kinetic_src_data = dict()
+        #self._kinetic_src_data["kinetic_0"] = {"name": kinetic_name, "substrate": kinetic_substrate,
+        #                                         "conc_unit": kinetic_units, "data": kinetic_df}
         
-
         self._init_json_dict()
-        # self._load_data("standard_0")
-        # self._load_data("kinetic_0")
-        # self._load_data("binding_0")
+
+        # Populate with metadata, which was stored in the kinetics dataframe
+        self._json_dict['metadata']['chamber_IDs'] = kinetics_data['indep_vars']['chamber_IDs'] # (n_concentrations, )
+        self._json_dict['metadata']['sample_IDs'] = kinetics_data['indep_vars']['sample_IDs'] # (n_concentrations, )
+
+        self._json_dict['runs'][standard_name] = standard_data
+        self._json_dict['runs'][kinetic_name] = kinetics_data
 
         return
-        self._load_std_data("standard_0")
-        self._load_kinetic_data("kinetic_0")
-        self._load_button_quant_data("kinetic_0")
 
+    def _verify_file_exists(self, file_path: str) -> None:
+        '''
+        Verifies that a file exists at the given path.
+        Returns an informative Error message if not.
+
+                Parameters:
+                        file_path (str): Path to the file
+
+                Returns:
+                        None
+        '''
+
+        # exists?
+        if Path(file_path).is_file():
+            return True
+
+        # if not, check if the parent file even exists
+        parent_file_exists = False
+        parent_file_contents = []
+
+        parent_file = Path(file_path).parent
+
+        while not parent_file_exists and parent_file != Path('/'):
+            if Path(parent_file).exists():
+                parent_file_exists = True
+                parent_file_contents = [str(f) for f in Path(parent_file).iterdir() if f.is_file()]
+            else:
+                parent_file = parent_file.parent
+        
+        if not parent_file_exists:
+            raise HtbamDBException(f"File {file_path} does not exist. We cannot find any files matching the path provided")
+        else:
+            raise HtbamDBException(f"File {file_path} does not exist. We found the parent file {parent_file} but it does not contain the file you requested.\n \
+                                   We found the following files in the parent directory:\n" + "\n".join(parent_file_contents))
 
     def _init_json_dict(self) -> None:
         '''
         Populates an initial dictionary with chamber specific metadata.
 
-                Parameters:
-                        None
+        Parameters:
+                None
 
-                Returns:
-                        None
-        '''        
-        unique_chambers = self._standard_src_data["standard_0"]["data"][['id','x_center_chamber', 'y_center_chamber', 'radius_chamber', 
-        'xslice', 'yslice', 'indices']].drop_duplicates(subset=["indices"]).set_index("indices")
-        self._json_dict = {"chamber_metadata": unique_chambers.to_dict("index")}
+        Returns:
+                None
+        ''' 
+        self._json_dict = dict()
+        self._json_dict["metadata"] = dict() # Will contain chamber_IDs, sample_IDs as 1D numpy arrays of shape (n_chambers, )
         self._json_dict["runs"] = dict()
 
     def parse_concentration(self, conc_str: str, unit_name: str) -> float:
@@ -311,32 +352,33 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
         
         return recursive_string(self._json_dict, 0)
     
-    def add_run_data(self, run_type: str, data_path: str, run_name: str, run_substrate: str, run_units: str):
+    # NF. Is this every used? looks like the funcitons inside don't exist.
+    # def add_run_data(self, run_type: str, data_path: str, run_name: str, run_substrate: str, run_units: str):
        
-        if run_type == "standard":
-            stadard_run_num = len([key for key in self._json_dict['runs'].keys() if 'standard' in key])
-            standard_df = pd.read_csv(data_path)
-            standard_df['indices'] = standard_df.x.astype('str') + ',' + standard_df.y.astype('str')
+    #     if run_type == "standard":
+    #         stadard_run_num = len([key for key in self._json_dict['runs'].keys() if 'standard' in key])
+    #         standard_df = pd.read_csv(data_path)
+    #         standard_df['indices'] = standard_df.x.astype('str') + ',' + standard_df.y.astype('str')
 
-            self._standard_src_data = dict()
-            self._standard_src_data[f"standard_{stadard_run_num}"] = {"name": run_name, "substrate": run_substrate,
-                                                    "conc_unit": run_units, "data": standard_df}
-            self._load_std_data(f"standard_{stadard_run_num}")
-            print(f"Added run data to database.\n Run ID: standard_{stadard_run_num}\n Run name: {run_name}\n Run type: {run_type}\n Run substrate: {run_substrate}\n Run units: {run_units}")
-        elif run_type == "kinetic":
-            kinetic_run_num = len([key for key in self._json_dict['runs'].keys() if 'kinetic' in key])
-            kinetic_df = pd.read_csv(data_path)
-            kinetic_df['indices'] = kinetic_df.x.astype('str') + ',' + kinetic_df.y.astype('str')
-            self._kinetic_src_data = dict()
-            self._kinetic_src_data[f"kinetic_{kinetic_run_num}"] = {"name": run_name, "substrate": run_substrate,
-                                                    "conc_unit": run_units, "data": kinetic_df}
-            self._load_kinetic_data(f"kinetic_{kinetic_run_num}")
-            self._load_button_quant_data(f"kinetic_{kinetic_run_num}")
-            print(f"Added run data to database.\n Run ID: kinetic_{kinetic_run_num} Run name: {run_name}\n Run type: {run_type}\n Run substrate: {run_substrate}\n Run units: {run_units}")
-        else:
-            raise HtbamDBException(f"Run type {run_type} not supported. Supported types: ['standard', 'kinetic']")
+    #         self._standard_src_data = dict()
+    #         self._standard_src_data[f"standard_{stadard_run_num}"] = {"name": run_name, "substrate": run_substrate,
+    #                                                 "conc_unit": run_units, "data": standard_df}
+    #         self._load_std_data(f"standard_{stadard_run_num}")
+    #         print(f"Added run data to database.\n Run ID: standard_{stadard_run_num}\n Run name: {run_name}\n Run type: {run_type}\n Run substrate: {run_substrate}\n Run units: {run_units}")
+    #     elif run_type == "kinetic":
+    #         kinetic_run_num = len([key for key in self._json_dict['runs'].keys() if 'kinetic' in key])
+    #         kinetic_df = pd.read_csv(data_path)
+    #         kinetic_df['indices'] = kinetic_df.x.astype('str') + ',' + kinetic_df.y.astype('str')
+    #         self._kinetic_src_data = dict()
+    #         self._kinetic_src_data[f"kinetic_{kinetic_run_num}"] = {"name": run_name, "substrate": run_substrate,
+    #                                                 "conc_unit": run_units, "data": kinetic_df}
+    #         self._load_kinetic_data(f"kinetic_{kinetic_run_num}")
+    #         self._load_button_quant_data(f"kinetic_{kinetic_run_num}")
+    #         print(f"Added run data to database.\n Run ID: kinetic_{kinetic_run_num} Run name: {run_name}\n Run type: {run_type}\n Run substrate: {run_substrate}\n Run units: {run_units}")
+    #     else:
+    #         raise HtbamDBException(f"Run type {run_type} not supported. Supported types: ['standard', 'kinetic']")
         
-        return
+    #     return
 
     def get_run_names(self):
         return [key for key in self._json_dict['runs'].keys()]
