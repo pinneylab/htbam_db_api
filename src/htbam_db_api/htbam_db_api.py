@@ -7,30 +7,50 @@ from pathlib import Path
 import re
 from copy import deepcopy
 
+# DATA_TYPE_STRUCTURE = {
+#     "standard": 
+#         {"conc_label": "concentration_uM",
+#          "luminance_label": "sum_chamber",
+#          "time_label": "time_s"},
+#     "kinetic": 
+#         {"conc_label": "series_index",
+#          "luminance_label": "sum_chamber",
+#          "time_label": "time_s"},
+#     "binding":
+#         {"conc_label": None}
+# }
+
+# These are the human-readable labels for our data. Some are from the CSV, while others (like chamber_IDs) are constructed.
+# This is what we will be returning when we parse each CSV. 
+# The dimensions are noted.
 DATA_TYPE_STRUCTURE = {
-    "standard": 
-        {"conc_label": "concentration_uM",
-         "luminance_label": "sum_chamber",
-         "time_label": "time_s"},
     "kinetic": 
-        {"conc_label": "series_index",
-         "luminance_label": "sum_chamber",
-         "time_label": "time_s"},
-    "binding":
-        {"conc_label": None}
+        {'indep_vars':
+            [   'concentration', # (n_concentrations)
+                'chamber_IDs',   # (n_chambers)
+                'sample_IDs',    # (n_chambers)
+                "button_quant_sum",  # (n_chambers)
+                "time",          # (n_concentrations, n_time_points)
+            ],
+        'dep_vars':
+            [   "luminance",    # (n_concentrations, n_time_points, n_chambers)
+            ]
+        }
 }
 
-def parse_concentration(conc_str: str, unit_name: str) -> float:
-            '''
-            Currently, we're storing substrate concentration as a string in the kinetics data.
-            This will be changed in the future to store as a float + unit as a string. For now,
-            we will parse jankily.
-            '''
-            #first, remove the unit and everything following
-            conc = conc_str.split(unit_name)[0]
-            #concentration number uses underscore as decimal point. Here, we replace and convert to a float:
-            conc = float(conc.replace("_", "."))
-            return conc
+# These are the CSV columns that correspond with our human-readable labels.
+CSV_DATA_LABELS = {
+    'concentration': 'concentration',   # we will construct this from raw_concentration
+    'raw_concentration': 'series_index',
+    'chamber_IDs': 'chamber_IDs',                 # we construct this from chamber_x, chamber_y
+    'sample_IDs': 'id',
+    'chamber_x': 'x',
+    'chamber_y': 'y',
+    'time': 'time_s',
+    'luminance': 'sum_chamber',
+    'button_quant_sum': 'summed_button_BGsub_Button_Quant',
+    'standardcurve_concentration': 'concentration_uM', # This is because on the microscope, the concentration is named differently for standard experiments. We should change it to be uniform.
+}
 
 class AbstractHtbamDBAPI(ABC):
     def __init__(self):
@@ -111,231 +131,143 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
         self._json_dict = {"chamber_metadata": unique_chambers.to_dict("index")}
         self._json_dict["runs"] = dict()
 
-    def load_run_from_csv(self,
-                          csv_path: str, 
-                          run_type: str,
-                          conc_unit_str: str) -> None:
-        
-        # confirm run_type is valid
-        assert run_type in DATA_TYPE_STRUCTURE.keys(), f"Invalid run type: {run_type}. Must be one of {VALID_DATA_TYPES}."
-
-        # get run_type specific data structure
-        run_structure = DATA_TYPE_STRUCTURE[run_type]
-
-        # generate run name
-        run_num = len([key for key in self._json_dict['runs'].keys() if 'run_type' in key])
-        run_name = f"{run_type}_{run_num}"
-
-        # validate run name
-        dtype_string = "|".join(DATA_TYPE_STRUCTURE.keys())
-        pattern = re.compile(f"^({dtype_string})_[0-9]*$")
-        if not pattern.match(run_name):
-            raise HtbamDBException(f"Malformed run name: {run_name}")
-        if run_name in self._json_dict["runs"].keys():
-            raise HtbamDBException(f"Run {run_name} already exists in json_dict.")
-        
-        # read in dataframe
-        df = pd.read_csv(csv_path)
-        df['indices'] = df.x.astype('str') + ',' + df.y.astype('str')
-        print(df["time_s"].unique())
-        # get and check chamber count
-        num_chambers = len(df['indices'].unique())
-        assert num_chambers == 1792, "yo this should probably be 1792... but if you're really sure it shouldn't be ask freitas"
-        
-        # validate data structure, parse concentration, add time_s column if not present
-        for key, value in run_structure.items():
-            # TODO: load bearing file names... sad... we should fix these eventually
-            if key == "conc_label":
-                # parse for concentration
-                print('Warning: parsing concentration from string')
-                print("This will look like:")
-                print(df[value][0], "->", parse_concentration(df[value][0], conc_unit_str))
-                df[value] = df[value].apply(lambda x: parse_concentration(x, conc_unit_str))
-            elif value in df.columns:
-                pass
-            elif key == "time_label":
-                # if time_s is not in the dataframe, create it
-                df[value] = pd.Series([0]*len(df), index=df.index)
-            else:
-                raise HtbamDBException(f"Column {value} not found in dataframe.")
-        
-        
-        # TODO: i am worried we will lose chamber ordering somewhere in here,
-        #       so we should make sure we track that somehow
-
-        ind_var_vals = []
-        dep_var_arrs = []
-
-        # TODO: i think this groupby call can be flexible (i.e., we could make it a specifiable list)
-        for ind_vars, subset in df.groupby([run_structure["time_label"], run_structure["conc_label"]], sort=True):
-            
-            ind_var_vals.append(list(ind_vars))
-
-            # TODO: luminance label could easily be changed to a list of labels, maybe we should
-            #       do that for forward compatibility
-            dep_var_arrs.append(subset[run_structure["luminance_label"]].to_numpy())
-
-        dep_var_arrs = np.array(dep_var_arrs).T
-        ind_var_vals = np.array(ind_var_vals)
-
-        for i in range(ind_var_vals.shape[-1]):
-            print(np.unique(ind_var_vals[:,i]))
-        print(ind_var_vals)
-        #print(np.array(ind_var_vals))
-        print(dep_var_arrs.shape)
-        # for conc, subset in df.groupby(run_structure["conc_label"], sort=True):
-        #     print("#####\n",conc,"\n","#####\n", subset)
-        return  
-        std_assay_dict = {}
-        for prod_conc, subset in df.groupby("concentration_uM"):
-            squeezed = _squeeze_df(subset, grouping_index="indices", squeeze_targets=['sum_chamber', 'std_chamber'])
-            squeezed["time_s"] = pd.Series([[0]]*len(squeezed), index=squeezed.index) #this tomfoolery is used to create a list with a single value, 0, for the standard curve assays.
-            std_assay_dict[i] = {
-                "conc": prod_conc,
-                "time_s": squeezed.iloc[0]["time_s"],
-                "chambers": squeezed.drop(columns=["time_s", "indices"]).to_dict("index")}
-            i += 1
-        print(std_assay_dict)
-        return
-        if "runs" not in self._json_dict:
-            self._json_dict["runs"] = {}
-        self._json_dict["runs"][run_name]= {
-            "name": self._standard_src_data[run_name]["name"],
-            "substrate": self._standard_src_data[run_name]["substrate"],
-            "conc_unit": self._standard_src_data[run_name]["conc_unit"],
-            "assays": std_assay_dict
-            }
-
-
-    # def _load_std_data(self, run_name: str) -> None:
-    #     '''
-    #     Populates an json_dict with standard curve data with the following schema:
-    #     {standard_run_#: {
-    #         name: str,
-    #         type: str,
-    #         conc_unit: str,
-    #         assays: {
-    #             1: {
-    #                 conc: float,
-    #                 _s: [0],time
-    #                 chambers: {
-    #                     1,1: {
-    #                         sum_chamber: [...],
-    #                         std_chamber: [...]
-    #                     },
-    #                     ...
-    #                     }}}}
-
-    #             Parameters:
-    #                     None
-
-    #             Returns:
-    #                     None
-    #     '''
-    #     pattern = re.compile("^standard_[0-9]*$")
-
-    #     if not pattern.match(run_name):
-    #         raise HtbamDBException(f"Malformed run name: {run_name}")
-    #     if run_name not in self._standard_src_data.keys():
-    #         raise HtbamDBException(f"Run {run_name} not found in standard curve source data.")
-    #     if run_name in self._json_dict["runs"].keys():
-    #         raise HtbamDBException(f"Run {run_name} already exists in json_dict.")
-      
-
-    #     i = 0    
-    #     std_assay_dict = {}
-    #     for prod_conc, subset in self._standard_src_data[run_name]["data"].groupby("concentration_uM"):
-    #         squeezed = _squeeze_df(subset, grouping_index="indices", squeeze_targets=['sum_chamber', 'std_chamber'])
-    #         squeezed["time_s"] = pd.Series([[0]]*len(squeezed), index=squeezed.index) #this tomfoolery is used to create a list with a single value, 0, for the standard curve assays.
-    #         std_assay_dict[i] = {
-    #             "conc": prod_conc,
-    #             "time_s": squeezed.iloc[0]["time_s"],
-    #             "chambers": squeezed.drop(columns=["time_s", "indices"]).to_dict("index")}
-    #         i += 1
-    #     print(std_assay_dict)
-    #     if "runs" not in self._json_dict:
-    #         self._json_dict["runs"] = {}
-    #     self._json_dict["runs"][run_name]= {
-    #         "name": self._standard_src_data[run_name]["name"],
-    #         "substrate": self._standard_src_data[run_name]["substrate"],
-    #         "conc_unit": self._standard_src_data[run_name]["conc_unit"],
-    #         "assays": std_assay_dict
-    #         }
+    def parse_concentration(self, conc_str: str, unit_name: str) -> float:
+            '''
+            Currently, we're storing substrate concentration as a string in the kinetics data.
+            This will be changed in the future to store as a float + unit as a string. For now,
+            we will parse jankily.
+            '''
+            #first, remove the unit and everything following
+            conc = conc_str.split(unit_name)[0]
+            #concentration number uses underscore as decimal point. Here, we replace and convert to a float:
+            conc = float(conc.replace("_", "."))
+            return conc
     
+    def load_run_from_csv(self, csv_path: str, run_type:str, conc_unit_str: str) -> dict:
 
-    # def _load_kinetic_data(self, run_name: str) -> None:
-    #     '''
-    #     Populates an json_dict with kinetic data with the following schema:
-    #     {kinetics_run_#: {
-    #         name: str,
-    #         type: str,
-    #         conc_unit: str,
-    #         assays: {
-    #             1: {
-    #                 conc: float,
-    #                 time_s: [0],
-    #                 chambers: {
-    #                     1,1: {
-    #                         sum_chamber: [...],
-    #                         std_chamber: [...]
-    #                     },
-    #                     ...
-    #                     }}}}
+        ### Load CSV
+        with open(csv_path, 'r') as f:
+            df = pd.read_csv(f)
 
-    #             Parameters:
-    #                     None
-
-    #             Returns:
-    #                     None
-        
-                        
-    #     {kintetcs: {
-    #         substrate_conc: {
-    #             time_s: [0,1, ...],
-    #             chambers: {
-    #                 1,1: {
-    #                     sum_chamber: [...],
-    #                     std_chamber: [...]
-    #                 },
-    #                 ...
-    #                 }}}}
-
-    #             Parameters:
-    #                     None
-
-    #             Returns:
-    #                     None
-    #     '''    
-
+        ### Pre-process CSV
+        ### TODO: Unify standard curve and kinetics CSV formats on microscope, so we don't have to juggle here.
+        L = CSV_DATA_LABELS # shorthand for labels dict.
+        # The standard curve CSVs look different that the usual kinetics. Let's rectify that:
+        if L['time'] not in df.columns:
+            df[L['time']] = 0
+        # First, we convert the raw concentration string to a float:
+        if L['raw_concentration'] in df.columns:
+            # Kinetics CSV format
+            df[L['concentration']] = df[L['raw_concentration']].apply(lambda x: self.parse_concentration(x, 'nM'))
+        else:
+            # Standard curve CSV format
+            df[L['concentration']] = df[L['standardcurve_concentration']]
+        # Create unique Chamber_IDs as "x,y"
+        df[L['chamber_IDs']] = df[L['chamber_x']].astype(str) + ',' + df[L['chamber_y']].astype(str)
        
-    #     pattern = re.compile("^kinetic_[0-9]*$")
+        ### Sort
+        # Sort the df first by chamber_id (using x and y to keep order correct), then by concentration, then by time
+        # Warning: Modifying in-place here.
+        df = df.sort_values(by=[L['chamber_x'], L['chamber_y'], L['concentration'], L['time']])
 
-    #     if not pattern.match(run_name):
-    #         raise HtbamDBException(f"Malformed run name: {run_name}")
-    #     if run_name not in self._kinetic_src_data.keys():
-    #         raise HtbamDBException(f"Run {run_name} not found in kinetic source data.")
-    #     if run_name in self._json_dict["runs"].keys():
-    #         raise HtbamDBException(f"Run {run_name} already exists in json_dict.")
+        ### Process data into numpy arrays:
+        # N.F. I think we can have different functions to do this. Ideally we should keep data in the generally flexible "kinetics" format.
+        # This format should work for kinetics (multiple concentrations and timepoints), inhibition, and standard curves (single timepoint).
+        data_processing_functions = {
+            'kinetics': self.process_dataframe_kinetics,
+            'binding':  self.process_dataframe_binding
+        }
 
-    #     i = 0    
-    #     kin_dict = {}
-    #     for sub_conc, subset in self._kinetic_src_data[run_name]["data"].groupby("series_index"):
-    #         squeezed = _squeeze_df(subset, grouping_index="indices", squeeze_targets=["time_s",'sum_chamber', 'std_chamber'])
-    #         #squeezed["time_s"] = 0
-    #         kin_dict[i] = {
-    #             "conc": parse_concentration(sub_conc),
-    #             "time_s": squeezed.iloc[0]["time_s"],
-    #             "chambers": squeezed.drop(columns=["time_s", "indices"]).to_dict("index")}
-    #         i += 1
+        # Pass our dataframe into the function which will process into a dict of numpy arrays.
+        data_dict = data_processing_functions[run_type](df)
 
-    #     if "runs" not in self._json_dict:
-    #         self._json_dict["runs"] = {}
-    #     self._json_dict["runs"][run_name] = {
-    #         "name": self._kinetic_src_data[run_name]["name"],
-    #         "substrate": self._kinetic_src_data[run_name]["substrate"],
-    #         "conc_unit": self._kinetic_src_data[run_name]["conc_unit"],
-    #         "assays": kin_dict
-    #     }
+        return data_dict
+    
+    def process_dataframe_kinetics(self, df):
+        '''
+        Turn a pre-processed experiment dataframe, and create a dict of numpy arrays in the 'kinetics' format.
+        
+        Arguments:
+            df: DataFrame of experiment data
+
+        Returns:
+            {
+                "kinetic": 
+                    {'indep_vars':
+                        {   'concentration':    concentrations, # (n_concentrations)
+                            'chamber_IDs':      chamber_ids, # (n_chambers)
+                            'sample_IDs':       sample_ids, # (n_chambers)
+                            "button_quant_sum": button_quant, # (n_chambers)
+                            "time":             time_array # (n_concentrations, n_time_points)
+                        },
+                    'dep_vars':
+                        {   "luminance",        RFU_array # (n_concentrations, n_time_points, n_chambers)
+                        }
+                    }
+            }
+        '''
+        L = CSV_DATA_LABELS # shorthand for labels dict.
+
+        # Chamber_IDs(length n_chambers)
+        chamber_ids = df[L["chamber_IDs"]].unique()      # n_chambers
+
+        # Get sample IDs (length n_chambers)
+        chamber_to_sample_map = df.set_index(L["chamber_IDs"])[L['sample_IDs']].to_dict() # Create a mapping of Chamber_IDs to Sample_IDs
+        sample_ids = np.array([chamber_to_sample_map[chamber] for chamber in chamber_ids]) # Map the Sample_IDs to the unique Chamber_IDs
+
+        # Get button quant (length n_chambers)
+        if L['button_quant_sum'] in df.columns:
+            chamber_to_button_quant_map = df.set_index(L["chamber_IDs"])[L['button_quant_sum']].to_dict() # Create a mapping of Chamber_IDs to Button_Quant
+            button_quant = np.array([chamber_to_button_quant_map[chamber] for chamber in chamber_ids]) # Map the Button_Quant to the unique Chamber_IDs
+        else: 
+            button_quant = np.nan
+
+        # Chamber_IDs(length n_concentrations)
+        concentrations = df[L['concentration']].unique()  # n_concentrations
+
+        # Time array (n_concentrations, n_timepoints). The values are time in seconds.
+        time_array = np.array( list(
+                                    df[df[L["chamber_IDs"]] == df[L["chamber_IDs"]][0]] # Get just the first chamber
+                                    .groupby(L['concentration'])[L['time']]                                  # Group by the concentration column, and get just the time values.
+                                    .apply(list)) )                                                              # And convert the times for each concentration to a list.
+                                                                                                                # Then we convert to a list of lists, and then to a numpy array.
+
+        # RFU array (n_concentrations, n_timepoints, n_chambers)
+        RFU_list_by_conc = []
+        for conc_index, concentration in enumerate(concentrations):
+            time_values = time_array[conc_index]
+            #print(time_values)
+            RFU_list_by_time = []
+            for time_index, time in enumerate(time_values):
+                # Get the RFU values for this concentration and time
+                rfu_values = df[(df[L['concentration']] == concentration) & (df[L['time']] == time)][L['luminance']].to_list()
+                RFU_list_by_time.append(rfu_values)
+            # Append the RFU values for this concentration to the list
+            RFU_list_by_conc.append(RFU_list_by_time)
+        # Convert the list to a numpy array
+        RFU_array = np.array(RFU_list_by_conc)
+
+        data_dict = {
+            'indep_vars': {
+                'concentration':    concentrations,     # (n_concentrations)
+                'chamber_IDs':      chamber_ids,        # (n_chambers)
+                'sample_IDs':       sample_ids,         # (n_chambers)
+                'button_quant_sum': button_quant,       # (n_chambers)
+                'time':             time_array          # (n_concentrations, n_time_points)
+            },
+            'dep_vars': {
+                'luminance':        RFU_array           # (n_concentrations, n_time_points, n_chambers)
+            }
+        }
+
+        return data_dict
+
+    def process_dataframe_binding(self, df):
+        '''
+        Turn a pre-processed experiment dataframe, and create a dict of numpy arrays in the 'binding' format.
+        TODO: Not implemented.
+        '''
+        pass
 
     def _load_button_quant_data(self, run_name: str) -> None:
         '''
