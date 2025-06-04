@@ -11,7 +11,8 @@ from copy import deepcopy
 # This is what we will be returning when we parse each CSV. 
 # The dimensions are noted.
 DATA_TYPE_STRUCTURE = {
-    "kinetics": 
+    # For RFU data over time, with multiple concentrations.
+    "RFU_data": 
         {'indep_vars':
             [   'concentration', # (n_concentrations)
                 'chamber_IDs',   # (n_chambers)
@@ -23,7 +24,8 @@ DATA_TYPE_STRUCTURE = {
             [   "luminance",    # (n_concentrations, n_time_points, n_chambers)
             ]
         },
-    "kinetics_slopes": 
+    # For standard curve slope/intercept (several per chamber)
+    "linear_fit_data": 
         {'indep_vars':
             [   'concentration', # (n_concentrations)
                 'chamber_IDs',   # (n_chambers)
@@ -34,13 +36,28 @@ DATA_TYPE_STRUCTURE = {
         "dep_vars"  : [
             "slope",   # (n_conc, n_chamb)
             "intercept", # (n_conc, n_chamb)
+            "r_squared", # (n_conc, n_chamb)
         ],
         "meta": {
             "fit": "luminance_vs_time",
             "model": "LinearRegression",
         }
         },
-    "std_curve_slopes": 
+    "linear_fit_data_mask": 
+        {'indep_vars':
+            [   'concentration', # (n_concentrations)
+                'chamber_IDs',   # (n_chambers)
+                'sample_IDs',    # (n_chambers)
+                "button_quant_sum",  # (n_chambers)
+                "time",          # (n_concentrations, n_time_points)
+            ],
+        "dep_vars"  : [
+            "mask",   # (n_conc, n_chamb)
+        ],
+        "meta": {
+            }
+        },
+    "concentration_data": 
         {'indep_vars':
             [   'concentration', # (n_concentrations)
                 'chamber_IDs',   # (n_chambers)
@@ -49,14 +66,11 @@ DATA_TYPE_STRUCTURE = {
                 "time",          # (n_concentrations, n_time_points)
             ],
         "dep_vars"  : {
-            "slope",            # (n_chamb)
-            "intercept",        # (n_chamb)
+            "concentration",            # (n_chamb)
         },
         "meta": {
-            "fit" : "luminance_vs_concentration", 
-            "model": "LinearRegression",
         }
-        }
+    }
 }
 
 # These are the CSV columns that correspond with our human-readable labels.
@@ -112,6 +126,9 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
 
         self.add_run(standard_name, standard_data)
         self.add_run(kinetic_name, kinetics_data)
+
+        # Use the kinetic data to create a separate button_quant run, for later processing:
+        self.add_run('button_quant', self.process_button_quant_from_kinetics(kinetics_data))
 
         return
     
@@ -235,16 +252,16 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
     
     def process_dataframe_kinetics(self, df):
         '''
-        Turn a pre-processed experiment dataframe, and create a dict of numpy arrays in the 'kinetics' format.
+        Turn a pre-processed experiment dataframe, and create a dict of numpy arrays in the 'RFU_data' format.
         
         Arguments:
             df: DataFrame of experiment data
 
         Returns:
             {
-                "kinetic": 
+                "RFU_data": 
                     {
-                    'data_type': 'kinetics',
+                    'data_type': 'RFU_data',
                     'indep_vars':
                         {   'concentration':    concentrations, # (n_concentrations)
                             'chamber_IDs':      chamber_ids, # (n_chambers)
@@ -300,7 +317,7 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
         RFU_array = np.array(RFU_list_by_conc)
 
         data_dict = {
-            'data_type': 'kinetics',
+            'data_type': 'RFU_data',
             'indep_vars': {
                 'concentration':    concentrations,     # (n_concentrations)
                 'chamber_IDs':      chamber_ids,        # (n_chambers)
@@ -322,6 +339,37 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
         '''
         pass
 
+    def process_button_quant_from_kinetics(self, kinetics_data: dict) -> dict:
+        '''
+        Processes the kinetics data to create a button quant run.
+        
+        Arguments:
+            kinetics_data: The kinetics data in the 'RFU_data' format.
+
+        Returns:
+            A dict of numpy arrays in the 'RFU_data' format for button quant.
+            We manually set there to be 0 timepoints and 0 substrate concenrtations, so we effectively
+            have a 1D array of shape (n_chambers) for the button_quant data.
+        '''
+        sample_ids = kinetics_data['indep_vars']['sample_IDs']
+        chamber_ids = kinetics_data['indep_vars']['chamber_IDs']
+        button_quant_sum = kinetics_data['indep_vars']['button_quant_sum']
+
+        button_quant_data = {'indep_vars':
+                                {   'concentration': np.array([]), # (n_concentrations)
+                                    'chamber_IDs':   chamber_ids,  # (n_chambers)
+                                    'sample_IDs':    sample_ids, # (n_chambers)
+                                    "button_quant_sum": button_quant_sum, # (n_chambers)
+                                    "time":   np.array([]),          # (n_concentrations, n_time_points)
+                                },
+                            'dep_vars':
+                                {   "luminance":    button_quant_sum, # (n_concentrations, n_time_points, # n_chambers)
+                                },
+                            'data_type': 'RFU_data'
+                            }
+        
+        return button_quant_data
+        
     def __repr__(self) -> str:
         '''
         Returns a string representation of the object.
@@ -429,296 +477,6 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
         '''
         self._json_dict['metadata'][name] = value
 
-    ##################################################
-    ###  N.F: Everything under here, I'm not using as of 5/16/25 in my refactor (will probably use some of it later)
-    ##################################################
-    
-    # def get_run_assay_data(self, run_name):
-    #     '''This function takes as input an HTBAM Database object.
-    #     For each kinetics run, we have 
-    #     It returns 3 numpy arrays:
-    #     chamber_ids: an array of the chamber ids (in the format '1,1' ... '32,56')
-    #         shape: (n_chambers,)
-    #     luminance_data: an array of the luminance data for each chamber
-    #         shape: (n_time_points, n_chambers, n_assays)
-    #     conc_data: an array of the concentration data for each chamber.
-    #         shape: (n_assays,)
-    #     time_data: an array of the time data for each time point.
-    #         shape: (n_time_points, n_assays)
-    #     '''
-    
-    #     chamber_idxs = np.array(list(self._json_dict['chamber_metadata'].keys()))
-    #     luminance_data = None
-    #     time_data = None
-    #     conc_data = np.array([])
-
-    #     #Each assay may have recorded a different # of time points.
-    #     #First, we'll just check what the max # of time points is:
-    #     max_time_points = 0
-    #     for assay in self._json_dict["runs"][run_name]['assays'].keys():
-    #         current_assay_time_points = len(np.array(self._json_dict["runs"][run_name]['assays'][assay]['time_s']))
-    #         if current_assay_time_points > max_time_points:
-    #             max_time_points = current_assay_time_points
-
-    #     for assay in self._json_dict["runs"][run_name]['assays'].keys():
-            
-    #         #to make things easier later, we'll be sorting the datapoints by time value.
-    #         #Get time data:
-    #         #collect from DB
-    #         current_time_array = np.array(self._json_dict["runs"][run_name]['assays'][assay]['time_s'])
-    #         current_time_array = current_time_array.astype(float) #so we can pad with NaNs
-    #         #pad the array with NaNs if there are fewer time points than the max
-    #         current_time_array = np.pad(current_time_array, (0, max_time_points - len(current_time_array)), 'constant', constant_values=np.nan)
-    #         #sort, and capture sorting idxs:
-    #         sorting_idxs = np.argsort(current_time_array)
-    #         current_time_array = current_time_array[sorting_idxs]
-    #         current_time_array = np.expand_dims(current_time_array, axis=1)
-    #         #add to our dataset
-    #         if time_data is None:
-    #             time_data = current_time_array
-    #         else:
-    #             time_data = np.concatenate([time_data, current_time_array], axis=1)
-
-    #         #Get luminance data:
-    #         current_luminance_array = None
-    #         for chamber_idx in chamber_idxs:
-    #             #collect from DB
-    #             current_chamber_array = np.array(self._json_dict["runs"][run_name]['assays'][assay]['chambers'][chamber_idx]['sum_chamber'])
-    #             #set type to float:
-    #             current_chamber_array = current_chamber_array.astype(float)
-    #             #pad the array with NaNs if there are fewer time points than the max
-    #             current_chamber_array = np.pad(current_chamber_array, (0, max_time_points - len(current_chamber_array)), 'constant', constant_values=np.nan)
-    #             #sort by time:
-    #             current_chamber_array = current_chamber_array[sorting_idxs]
-    #             #add a dimension at the end:
-    #             current_chamber_array = np.expand_dims(current_chamber_array, axis=1)
-
-    #             if current_luminance_array is None:
-    #                 current_luminance_array = current_chamber_array
-    #             else:
-    #                 current_luminance_array = np.concatenate([current_luminance_array, current_chamber_array], axis=1)
-    #         #add a dimension at the end:
-    #         current_luminance_array = np.expand_dims(current_luminance_array, axis=2)
-    #         #add to our dataset
-    #         if luminance_data is None:
-    #             luminance_data = current_luminance_array
-    #         else:
-    #             luminance_data = np.concatenate([luminance_data, current_luminance_array], axis=2)
-            
-    #         #Get concentration data:
-    #         #collect from DB
-    #         current_conc = self._json_dict["runs"][run_name]['assays'][assay]['conc']
-    #         conc_data = np.append(conc_data, current_conc)
-
-    #     #sort once more, by conc_data:
-    #     sorting_idxs = np.argsort(conc_data)
-    #     conc_data = conc_data[sorting_idxs]
-
-    #     #sort luminance data by conc_data:
-    #     luminance_data = luminance_data[:,:,sorting_idxs]
-        
-    #     return chamber_idxs, luminance_data, conc_data, time_data
-    
-    # def get_entity_data(self, entity_name: str):
-    #     chamber_idxs = np.array(list(self._json_dict['chamber_metadata'].keys()))
-    #     luminance_data = None
-    #     time_data = None
-    #     conc_data = np.array([])
-
-    #     #Each assay may have recorded a different # of time points.
-    #     #First, we'll just check what the max # of time points is:
-    #     time_dict = self._get_entity_independent_data(entity_name, 'time_s')
-    #     max_time_points = max([len(v) for v in time_dict.values()])
-        
-    #     # for assay in self._json_dict["runs"][entity_name]['assays'].keys():
-    #     #     current_assay_time_points = len(np.array(self._json_dict["runs"][entity_name]['assays'][assay]['time_s']))
-    #     #     if current_assay_time_points > max_time_points:
-    #     #         max_time_points = current_assay_time_points
-
-    #     for assay in self._json_dict["runs"][entity_name]['assays'].keys():
-            
-    #         #to make things easier later, we'll be sorting the datapoints by time value.
-    #         #Get time data:
-    #         #collect from DB
-    #         current_time_array = np.array(self._json_dict["runs"][entity_name]['assays'][assay]['time_s'])
-    #         current_time_array = current_time_array.astype(float) #so we can pad with NaNs
-    #         #pad the array with NaNs if there are fewer time points than the max
-    #         current_time_array = np.pad(current_time_array, (0, max_time_points - len(current_time_array)), 'constant', constant_values=np.nan)
-    #         #sort, and capture sorting idxs:
-    #         sorting_idxs = np.argsort(current_time_array)
-    #         current_time_array = current_time_array[sorting_idxs]
-    #         current_time_array = np.expand_dims(current_time_array, axis=1)
-    #         #add to our dataset
-    #         if time_data is None:
-    #             time_data = current_time_array
-    #         else:
-    #             time_data = np.concatenate([time_data, current_time_array], axis=1)
-
-    #         #Get luminance data:
-    #         current_luminance_array = None
-    #         for chamber_idx in chamber_idxs:
-    #             #collect from DB
-    #             current_chamber_array = np.array(self._json_dict["runs"][entity_name]['assays'][assay]['chambers'][chamber_idx]['sum_chamber'])
-    #             #set type to float:
-    #             current_chamber_array = current_chamber_array.astype(float)
-    #             #pad the array with NaNs if there are fewer time points than the max
-    #             current_chamber_array = np.pad(current_chamber_array, (0, max_time_points - len(current_chamber_array)), 'constant', constant_values=np.nan)
-    #             #sort by time:
-    #             current_chamber_array = current_chamber_array[sorting_idxs]
-    #             #add a dimension at the end:
-    #             current_chamber_array = np.expand_dims(current_chamber_array, axis=1)
-
-    #             if current_luminance_array is None:
-    #                 current_luminance_array = current_chamber_array
-    #             else:
-    #                 current_luminance_array = np.concatenate([current_luminance_array, current_chamber_array], axis=1)
-    #         #add a dimension at the end:
-    #         current_luminance_array = np.expand_dims(current_luminance_array, axis=2)
-    #         #add to our dataset
-    #         if luminance_data is None:
-    #             luminance_data = current_luminance_array
-    #         else:
-    #             luminance_data = np.concatenate([luminance_data, current_luminance_array], axis=2)
-            
-    #         #Get concentration data:
-    #         #collect from DB
-    #         current_conc = self._json_dict["runs"][entity_name]['assays'][assay]['conc']
-    #         conc_data = np.append(conc_data, current_conc)
-
-    #     #sort once more, by conc_data:
-    #     sorting_idxs = np.argsort(conc_data)
-    #     conc_data = conc_data[sorting_idxs]
-
-    #     #sort luminance data by conc_data:
-    #     luminance_data = luminance_data[:,:,sorting_idxs]
-        
-    #     return chamber_idxs, luminance_data, conc_data, time_data
-    
-    # def _get_entity_independent_data(self, entity_name: str, ind_variable_name):
-    #     assays = self._json_dict["runs"][entity_name]['assays'].items()
-    #     return {k: v[ind_variable_name] for k, v in assays}
-    
-    # def _init_analysis(self, run_name):
-    #     if 'analyses' not in self._json_dict['runs'][run_name].keys():
-    #         self._json_dict['runs'][run_name]['analyses'] = {}
-
-    # def add_analysis(self, run_name, analysis_type, chamber_idx, analysis_data):
-    
-    #     supported_analysis_types = ['linear_regression', 'ic50_raw', 'mm_raw', 'bgsub_linear_regression']
-    #     self._init_analysis(run_name)
-
-    #     if analysis_type not in supported_analysis_types:
-    #         raise HtbamDBException(f"Analysis type {analysis_type} not supported. Supported types: {supported_analysis_types}")
-        
-    #     if analysis_type not in self._json_dict['runs'][run_name]['analyses'].keys():
-    #         self._json_dict['runs'][run_name]['analyses'][analysis_type] = {'chambers': {}} #initialize the dictionary
-
-    #     self._json_dict['runs'][run_name]['analyses'][analysis_type]['chambers'][chamber_idx] = analysis_data
-
-    # def add_filtered_assay(self, run_name: str, assay_type: str, assay_data: dict):
-    #     supported_assay_types = ['filtered_initial_rates']
-    #     if assay_type not in supported_assay_types:
-    #         raise HtbamDBException(f"Analysis type {assay_type} not supported. Supported types: {supported_assay_types}")
-        
-    #     self._init_analysis(run_name)
-
-    #     #initialize the dictionary
-    #     self._json_dict['runs'][run_name]['analyses'][assay_type] = assay_data
-
-    # def add_sample_analysis(self, run_name: str, analysis_type: str, sample_name: str, sample_data: dict):
-    #     supported_assay_types = ['ic50_filtered', 'mm_filtered']
-    #     if analysis_type not in supported_assay_types:
-    #         raise HtbamDBException(f"Analysis type {analysis_type} not supported. Supported types: {supported_assay_types}")
-    #     if analysis_type not in self._json_dict['runs'][run_name]['analyses'].keys():
-    #         self._json_dict['runs'][run_name]['analyses'][analysis_type] = {'samples': {}}
-
-    #     self._json_dict['runs'][run_name]['analyses'][analysis_type]['samples'][sample_name] = sample_data
-
-    # def get_sample_analysis_dict(self, run_name: str, analysis_type: str):
-    #     return self._json_dict['runs'][run_name]['analyses'][analysis_type]['samples']
-         
-    # def get_filters(self, run_name, assay_type):
-    #     return self._json_dict['runs'][run_name]['analyses'][assay_type]["filters"]
-    
-    # def get_analysis(self, run_name, analysis_type, param):
-       
-    #     chamber_idxs = self._json_dict['runs'][run_name]['analyses'][analysis_type]['chambers']
-    #     query_result = {chamber_idx: 
-    #                     self._json_dict['runs'][run_name]['analyses'][analysis_type]['chambers'][chamber_idx][param] 
-    #                     for chamber_idx in chamber_idxs}
-    #     return query_result
-
-    # def get_chamber_name_dict(self):
-    #     return {chamber_idx: subdict['id'] for chamber_idx, subdict in self._json_dict['chamber_metadata'].items()}
-    
-    # def get_chamber_name_to_id_dict(self):
-    #     chamber_name_to_idx = {}
-    #     for chamber_idx, subdict in self._json_dict['chamber_metadata'].items():
-    #         name = subdict['id']
-    #         if name not in chamber_name_to_idx.keys():
-    #             chamber_name_to_idx[name] = [chamber_idx]
-    #         else:
-    #             chamber_name_to_idx[name].append(chamber_idx)
-    #     return chamber_name_to_idx
-    
-    # def get_button_quant_data(self, chamber_idx, button_quant_type='summed_button_BGsub_Button_Quant'):
-    #     return self._json_dict['button_quant'][chamber_idx][button_quant_type]
-    
-    # def get_concentration_units(self, run_name):
-    #     return self._json_dict['runs'][run_name]['conc_unit']
-    
-    # def combine_runs(self, run_names: List[str]):
-
-    #     # check that all runs are of the same type
-    #     run_types = [run_name.split('_')[0] for run_name in run_names]
-    #     if len(set(run_types)) > 1:
-    #         raise HtbamDBException("Runs must be of the same type to be combined.")
-        
-    #     # check that all runs are of type 'kinetic'
-    #     if run_types[0] != 'kinetic':
-    #         raise HtbamDBException("Runs must be of type 'kinetic' to be combined.")
-        
-    #     # check that all runs are in the database
-    #     for run_name in run_names:
-    #         if run_name not in self._json_dict['runs'].keys():
-    #             raise HtbamDBException(f"Run {run_name} not found in database.")
-            
-    #     new_run_num = len([key for key in self._json_dict['runs'].keys() if 'kinetic' in key])
-        
-    #     new_run_dict = {}
-    #     for run_name in run_names:
-    #         if "linear_regression" not in new_run_dict.keys():
-    #             new_run_dict["linear_regression"] = deepcopy(self._json_dict['runs'][run_name]['analyses']['linear_regression'])
-    #         else:
-    #             for chamber_idx in self._json_dict['runs'][run_name]['analyses']['linear_regression']['chambers'].keys():
-    #                 for key, value in new_run_dict["linear_regression"]["chambers"][chamber_idx].items():
-                        
-    #                     if key == 'mask':
-    #                         continue
-    #                     new_run_dict["linear_regression"]["chambers"][chamber_idx][key] = np.concatenate([value, self._json_dict['runs'][run_name]['analyses']['linear_regression']['chambers'][chamber_idx][key]])
-    #                 #print(self._json_dict['runs'][run_name]['analyses']['linear_regression']['chambers'][chamber_idx])
-    #                 #new_run_dict["linear_regression"]["chambers"][chamber_idx] = np.concatenate(new_run_dict["linear_regression"]["chambers"][chamber_idx], self._json_dict['runs'][run_name]['analyses']['linear_regression']['chambers'][chamber_idx])
-    #         if "filtered_initial_rates" not in new_run_dict.keys():
-    #             new_run_dict["filtered_initial_rates"] = deepcopy(self._json_dict['runs'][run_name]['analyses']['filtered_initial_rates'])
-    #         elif len(new_run_dict["filtered_initial_rates"]["filters"]) != len(self._json_dict['runs'][run_name]['analyses']['filtered_initial_rates']['filters']):
-    #             raise HtbamDBException("Runs must have the same number of filters to be combined.")
-    #         else:
-    #             for i in range(len(new_run_dict["filtered_initial_rates"]["filters"])):
-    #                 new_run_dict["filtered_initial_rates"]["filters"][i] = np.concatenate([new_run_dict["filtered_initial_rates"]["filters"][i], 
-    #                                                                                        self._json_dict['runs'][run_name]['analyses']['filtered_initial_rates']['filters'][i]],
-    #                                                                                        axis=1)
-    #     self._json_dict['runs'][f'kinetic_{new_run_num}']= {"analyses": new_run_dict}
-    #     return f'kinetic_{new_run_num}'
-
-    # def remove_run(self, run_name: str):
-    #     if run_name not in self._json_dict['runs'].keys():
-    #         raise HtbamDBException(f"Run {run_name} not found in database.")
-    #     del self._json_dict['runs'][run_name]   
-
-    # def remove_analysis(self, run_name: str, analysis_type: str):
-    #     if analysis_type not in self._json_dict['runs'][run_name]['analyses'].keys():
-    #         raise HtbamDBException(f"Analysis {analysis_type} not found in database.")
-    #     del self._json_dict['runs'][run_name]['analyses'][analysis_type]  
          
     # def export_json(self):
     #     '''This writes the database to file, as a dict -> json'''
