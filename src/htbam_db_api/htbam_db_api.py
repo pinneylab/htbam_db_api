@@ -10,9 +10,18 @@ from copy import deepcopy
 # These are the human-readable labels for our data. Some are from the CSV, while others (like chamber_IDs) are constructed.
 # This is what we will be returning when we parse each CSV. 
 # The dimensions are noted.
+
+# Metadata notes:
+# Dep var types
+# Something like "from"?
+# Something like "masked with"? 
+# Fit model
+
+# Maybe turn all the structs into (n_conc, n_chamb, n_time, n) where n could be 1 or more.
+
 DATA_TYPE_STRUCTURE = {
-    # For RFU data over time, with multiple concentrations.
-    "RFU_data": 
+    # For assay data that contains 3D data, like raw RFU or product amounts. (concentrations, timepoints, and chambers)
+    "3D_data": 
         {'indep_vars':
             [   'concentration', # (n_concentrations)
                 'chamber_IDs',   # (n_chambers)
@@ -21,11 +30,14 @@ DATA_TYPE_STRUCTURE = {
                 "time",          # (n_concentrations, n_time_points)
             ],
         'dep_vars':
-            [   "luminance",    # (n_concentrations, n_time_points, n_chambers)
-            ]
+            [   "dep_var",    # (n_concentrations, n_time_points, n_chambers)
+            ],
+        "meta": [
+            "dep_var_type" # (e.g. "luminance", "product", etc)
+        ],
         },
-    # For standard curve slope/intercept (several per chamber)
-    "linear_fit_data": 
+    # For data that varies by concentration and chamber # (We've lost the time dimension).
+    "2D_data": 
         {'indep_vars':
             [   'concentration', # (n_concentrations)
                 'chamber_IDs',   # (n_chambers)
@@ -34,16 +46,14 @@ DATA_TYPE_STRUCTURE = {
                 "time",          # (n_concentrations, n_time_points)
             ],
         "dep_vars"  : [
-            "slope",   # (n_conc, n_chamb)
-            "intercept", # (n_conc, n_chamb)
-            "r_squared", # (n_conc, n_chamb)
+            "dep_var",   # (n_conc, n_chamb)
         ],
         "meta": {
-            "fit": "luminance_vs_time",
-            "model": "LinearRegression",
+            "dep_var_type" # (e.g. "luminance", "product", etc)
         }
         },
-    "linear_fit_data_mask": 
+    # For masking out certain concentrations or entire chambers.
+    "2D_data_mask": 
         {'indep_vars':
             [   'concentration', # (n_concentrations)
                 'chamber_IDs',   # (n_chambers)
@@ -57,7 +67,25 @@ DATA_TYPE_STRUCTURE = {
         "meta": {
             }
         },
-    "concentration_data": 
+    # For 2D data with several fit parameters per chamber (e.g. standard curve slope/intercept, or enzyme kinetics fit parameters).
+    "2D_data_fits": 
+        {'indep_vars':
+            [   'concentration', # (n_concentrations)
+                'chamber_IDs',   # (n_chambers)
+                'sample_IDs',    # (n_chambers)
+                "button_quant_sum",  # (n_chambers)
+                "time",          # (n_concentrations, n_time_points)
+            ],
+        "dep_vars"  : [
+            "dep_var"   # (n_conc, n_chamb, n_fit_params)
+        ],
+        "meta": [
+            "parameters", # (n_params)
+            "model" # mm_model, etc
+        ]
+        },
+    # E.g. for enzyme concentration data, which is just a 1D array of concentrations for each chamber. We've lost both time and concentration.
+    "1D_data": 
         {'indep_vars':
             [   'concentration', # (n_concentrations)
                 'chamber_IDs',   # (n_chambers)
@@ -66,12 +94,94 @@ DATA_TYPE_STRUCTURE = {
                 "time",          # (n_concentrations, n_time_points)
             ],
         "dep_vars"  : {
-            "concentration",            # (n_chamb)
+            "dep_vars",            # (n_chamb)
+        },
+        "meta": [
+            "dep_var_type" # (e.g. "luminance", "product", etc)
+        ]
+    },
+    # E.g. for final model fitting, where we have several params per chamber (Vmax, Km, etc). 
+    "1D_data_fits": 
+        {'indep_vars':
+            [   'concentration', # (n_concentrations)
+                'chamber_IDs',   # (n_chambers)
+                'sample_IDs',    # (n_chambers)
+                "button_quant_sum",  # (n_chambers)
+                "time",          # (n_concentrations, n_time_points)
+            ],
+        "dep_vars"  : {
+            "dep_vars",            # (n_chamb, n_params
         },
         "meta": {
+            "model",     # e.g. mm_model
+            "parameters" # (n_params)
         }
     }
 }
+
+### Current as of 6/4/25, but I want to change to a 
+# DATA_TYPE_STRUCTURE = {
+#     # For RFU data over time, with multiple concentrations.
+#     "RFU_data": 
+#         {'indep_vars':
+#             [   'concentration', # (n_concentrations)
+#                 'chamber_IDs',   # (n_chambers)
+#                 'sample_IDs',    # (n_chambers)
+#                 "button_quant_sum",  # (n_chambers)
+#                 "time",          # (n_concentrations, n_time_points)
+#             ],
+#         'dep_vars':
+#             [   "luminance",    # (n_concentrations, n_time_points, n_chambers)
+#             ]
+#         },
+#     # For standard curve slope/intercept (several per chamber)
+#     "linear_fit_data": 
+#         {'indep_vars':
+#             [   'concentration', # (n_concentrations)
+#                 'chamber_IDs',   # (n_chambers)
+#                 'sample_IDs',    # (n_chambers)
+#                 "button_quant_sum",  # (n_chambers)
+#                 "time",          # (n_concentrations, n_time_points)
+#             ],
+#         "dep_vars"  : [
+#             "slope",   # (n_conc, n_chamb)
+#             "intercept", # (n_conc, n_chamb)
+#             "r_squared", # (n_conc, n_chamb)
+#         ],
+#         "meta": {
+#             "fit": "luminance_vs_time",
+#             "model": "LinearRegression",
+#         }
+#         },
+#     "linear_fit_data_mask": 
+#         {'indep_vars':
+#             [   'concentration', # (n_concentrations)
+#                 'chamber_IDs',   # (n_chambers)
+#                 'sample_IDs',    # (n_chambers)
+#                 "button_quant_sum",  # (n_chambers)
+#                 "time",          # (n_concentrations, n_time_points)
+#             ],
+#         "dep_vars"  : [
+#             "mask",   # (n_conc, n_chamb)
+#         ],
+#         "meta": {
+#             }
+#         },
+#     "concentration_data": 
+#         {'indep_vars':
+#             [   'concentration', # (n_concentrations)
+#                 'chamber_IDs',   # (n_chambers)
+#                 'sample_IDs',    # (n_chambers)
+#                 "button_quant_sum",  # (n_chambers)
+#                 "time",          # (n_concentrations, n_time_points)
+#             ],
+#         "dep_vars"  : {
+#             "concentration",            # (n_chamb)
+#         },
+#         "meta": {
+#         }
+#     }
+# }
 
 # These are the CSV columns that correspond with our human-readable labels.
 CSV_DATA_LABELS = {
