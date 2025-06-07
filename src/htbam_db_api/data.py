@@ -20,17 +20,23 @@ class IndepVars:
 @dataclass
 class Meta:
     # TODO: flesh this out
-    masks: dict = field(default_factory=dict)
-    model_fit: dict = field(default_factory=dict)
+    based_on: list[str] = field(default_factory=list)  # e.g. ['previous_run_1', previous_run_2'] if fit/masked from previus data
+    description: str = field(default='')
+    applied_masks: list[str] = field(default_factory=list)  # e.g. ['saved_mask_1', 'saved_mask_2'] if applied to this data
+    # If it's a curve fit:
+    fit_type: str = field(default='')  # e.g. 'linear', 'MM', etc.
+    # If it's a mask:
+    mask_type: str = field(default='')  # e.g. 'r_squared', 'positive_slope', etc.
+    mask_cutoff: float = field(default=0.0)  # e.g. 0.9 for R2 cutoff
 
 @dataclass
 class Data4D:
     indep_vars: IndepVars
-    meta: Meta = field(default_factory=Meta)
 
     dep_var: np.ndarray           # (n_conc, n_time, n_chamb, n_values)
     dep_var_type: list[str]       # e.g. ['luminance'] or ['slopes', 'intercepts']
     
+    meta: Meta = field(default_factory=Meta)
 
     def __post_init__(self):
         # make a full copy so original IndepVars isn’t shared
@@ -42,25 +48,27 @@ class Data4D:
 @dataclass
 class Data3D:
     indep_vars: IndepVars
-    meta: Meta = field(default_factory=Meta)
 
     dep_var: np.ndarray           # (n_conc, n_chamb, n_values)
     dep_var_type: list[str]       # e.g. ['luminance'] or ['slopes', 'intercepts']
-    
+
+    meta: Meta = field(default_factory=Meta)
+
     def __post_init__(self):
         self.indep_vars = deepcopy(self.indep_vars)
         self.indep_vars.__post_init__()
         if self.dep_var.ndim != 3:
-            raise ValueError(f"dep_var must be 2D, got {self.dep_var.shape}")
+            raise ValueError(f"dep_var must be 3D, got {self.dep_var.shape}")
 
 @dataclass
 class Data2D:
     indep_vars: IndepVars
-    meta: Meta = field(default_factory=Meta)
-
+    
     dep_var: np.ndarray           # (n_chambers, n_values)
     dep_var_type: list[str]       # e.g. ['luminance'] or ['slopes', 'intercepts']
     
+    meta: Meta = field(default_factory=Meta)
+
     def __post_init__(self):
         self.indep_vars = deepcopy(self.indep_vars)
         self.indep_vars.__post_init__()
