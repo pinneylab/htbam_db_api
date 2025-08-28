@@ -68,7 +68,7 @@ def load_run_from_csv(csv_path: str, run_type:str, conc_unit_str: str) -> Data3D
     # First, we convert the raw concentration string to a float:
     if L['raw_concentration'] in df.columns:
         # Kinetics CSV format
-        df[L['concentration']] = df[L['raw_concentration']].apply(lambda x: parse_concentration(x, 'nM'))
+        df[L['concentration']] = df[L['raw_concentration']].apply(lambda x: parse_concentration(x, conc_unit_str))
     else:
         # Standard curve CSV format
         df[L['concentration']] = df[L['standardcurve_concentration']]
