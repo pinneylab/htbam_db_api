@@ -21,3 +21,7 @@ ___
     - `$ pip install -e .`
 
 ### For stable code, install version via wheel file
+
+## Tutorial
+
+Please see [[htbam_analysis_tutorial.ipynb]] for a walkthrough.
