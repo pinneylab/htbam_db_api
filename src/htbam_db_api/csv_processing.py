@@ -1,4 +1,8 @@
 import numpy as np
+import pint
+from copy import copy
+
+from htbam_db_api.units import units
 
 # These are the CSV columns that correspond with our human-readable labels.
 CSV_DATA_LABELS = {
@@ -8,13 +12,14 @@ CSV_DATA_LABELS = {
     'sample_IDs': 'id',
     'chamber_x': 'x',
     'chamber_y': 'y',
-    'time': 'time_s',
+    'time': 'time_',                              # We'll add the units (usually s) later, so it looks like 'time_s'.
     'luminance': 'sum_chamber',
     'button_quant_sum': 'summed_button_BGsub_Button_Quant',
-    'standardcurve_concentration': 'concentration_uM', # This is because on the microscope, the concentration is named differently for standard experiments. We should change it to be uniform.
+    'standardcurve_concentration': 'concentration_', # We'll add the units (usually uM) later, so it looks like 'concentration_uM'.
+                                                     # We need this here because on the microscope, the concentration is named differently for standard experiments. We should change it to be uniform.
 }
 
-def process_dataframe_kinetics(df):
+def process_dataframe_kinetics(df, time_unit: pint.Unit, conc_unit: pint.Unit):
     '''
     Turn a pre-processed experiment dataframe, and create a dict of numpy arrays in the 'RFU_data' format.
     
@@ -24,7 +29,10 @@ def process_dataframe_kinetics(df):
     Returns:
         data_3d: Data3D object, with metadata, indep_vars, and dep_vars.
     '''
-    L = CSV_DATA_LABELS # shorthand for labels dict.
+    L = copy(CSV_DATA_LABELS) # shorthand for labels dict.
+    # Add units for time, and stdcurve concentration labels:
+    L['time'] += f"{time_unit:~}"
+    L['standardcurve_concentration'] += f"{conc_unit:~}".replace('µ', 'u') # cleans up uM
 
     # Chamber_IDs(length n_chambers)
     chamber_ids = df[L["chamber_IDs"]].unique()      # n_chambers
@@ -41,15 +49,14 @@ def process_dataframe_kinetics(df):
         button_quant = np.nan * np.ones(len(chamber_ids))  # If no button quant, fill with NaNs
 
     # Chamber_IDs(length n_concentrations)
-    concentrations = df[L['concentration']].unique()  # n_concentrations
+    concentrations = df[L['concentration']].unique() # n_concentrations
 
     # Time array (n_concentrations, n_timepoints). The values are time in seconds.
     time_array = np.array( list(
                                 df[df[L["chamber_IDs"]] == df[L["chamber_IDs"]][0]] # Get just the first chamber
                                 .groupby(L['concentration'])[L['time']]                                  # Group by the concentration column, and get just the time values.
-                                .apply(list)) )                                                              # And convert the times for each concentration to a list.
-                                                                                                            # Then we convert to a list of lists, and then to a numpy array.
-
+                                .apply(list)) )                                                        # And convert the times for each concentration to a list.
+                                                                                                              # Then we convert to a list of lists, and then to a numpy array.
     # RFU array (n_concentrations, n_timepoints, n_chambers)
     RFU_list_by_conc = []
     for conc_index, concentration in enumerate(concentrations):
@@ -66,7 +73,12 @@ def process_dataframe_kinetics(df):
     RFU_array = np.array(RFU_list_by_conc)
     # Expand by 1 axis so it's (n_concentrations, n_timepoints, n_chambers, 1)
     RFU_array = RFU_array[..., np.newaxis]
-
+    
+    ### Adding units:
+    concentrations = concentrations * conc_unit
+    button_quant = button_quant * units.RFU
+    time_array = time_array * time_unit
+    
     ### Create the data object:
     from htbam_db_api.data import Data4D, IndepVars, Meta
     # Independent variables:
@@ -77,7 +89,8 @@ def process_dataframe_kinetics(df):
     data_4d = Data4D(indep_vars=indep_vars, 
                      meta=meta,
                      dep_var=RFU_array, 
-                     dep_var_type=['luminance'])
+                     dep_var_type=['luminance'],
+                     dep_var_units=[units.RFU])
 
     return data_4d
 
@@ -88,7 +101,7 @@ def process_dataframe_binding(self, df):
     '''
     pass
 
-def parse_concentration(conc_str: str, unit_name: str) -> float:
+def parse_concentration(conc_str: str, unit: pint.Unit) -> float:
     '''
     Currently, we're storing substrate concentration as a string in the kinetics data.
     This will be changed in the future to store as a float + unit as a string. For now,
@@ -96,13 +109,14 @@ def parse_concentration(conc_str: str, unit_name: str) -> float:
 
     Arguments:
         conc_str: The concentration string to parse
-        unit_name: The unit name to remove from the string
+        unit: The unit to remove from the string, as a pint.Unit
 
     Returns:
         The concentration as a float
     '''
     #first, remove the unit and everything following
-    conc = conc_str.split(unit_name)[0]
+    unit_str = f"{unit:~}".replace('µ', 'u')
+    conc = conc_str.split(unit_str)[0]
     #concentration number uses underscore as decimal point. Here, we replace and convert to a float:
     conc = float(conc.replace("_", "."))
     return conc

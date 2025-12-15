@@ -9,8 +9,12 @@ readme = "README.md"
 python = "^3.9"
 pandas = "1.4.3"
 numpy = "1.23.1"
-
+pint = "0.24.4"
 
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.packages]
+include = ["htbam_db_api/units/*.txt"]
+

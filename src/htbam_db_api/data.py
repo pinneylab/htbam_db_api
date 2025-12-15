@@ -1,14 +1,15 @@
 from dataclasses import dataclass, field
 import numpy as np
 from copy import deepcopy
+import pint
 
 @dataclass
 class IndepVars:
-    concentration: np.ndarray     # (n_conc,)
-    chamber_IDs: np.ndarray       # (n_chamb,)
-    sample_IDs: np.ndarray        # (n_chamb,)
-    button_quant_sum: np.ndarray  # (n_chamb,)
-    time: np.ndarray              # (n_conc, n_time)
+    concentration: pint.Quantity     # (n_conc,)
+    chamber_IDs: np.ndarray       # (n_chamb,)   # These two are dimensionless
+    sample_IDs: np.ndarray        # (n_chamb,)   # since they're just labels
+    button_quant_sum: pint.Quantity  # (n_chamb,)
+    time: pint.Quantity              # (n_conc, n_time)
 
     def __post_init__(self):
         for var in self.concentration, self.chamber_IDs, self.sample_IDs, self.button_quant_sum:
@@ -35,6 +36,7 @@ class Data4D:
 
     dep_var: np.ndarray           # (n_conc, n_time, n_chamb, n_values)
     dep_var_type: list[str]       # e.g. ['luminance'] or ['slopes', 'intercepts']
+    dep_var_units: list[pint.Unit]  # e.g. [units.RFU] or [units.RFU / units.s, units.RFU]
     
     meta: Meta = field(default_factory=Meta)
 
@@ -51,6 +53,7 @@ class Data3D:
 
     dep_var: np.ndarray           # (n_conc, n_chamb, n_values)
     dep_var_type: list[str]       # e.g. ['luminance'] or ['slopes', 'intercepts']
+    dep_var_units: list[pint.Unit]  # e.g. [units.RFU] or [units.RFU / units.s, units.RFU]
 
     meta: Meta = field(default_factory=Meta)
 
@@ -66,6 +69,7 @@ class Data2D:
     
     dep_var: np.ndarray           # (n_chambers, n_values)
     dep_var_type: list[str]       # e.g. ['luminance'] or ['slopes', 'intercepts']
+    dep_var_units: list[pint.Unit]  # e.g. [units.RFU] or [units.RFU / units.s, units.RFU]
     
     meta: Meta = field(default_factory=Meta)
 

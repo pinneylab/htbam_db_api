@@ -4,9 +4,11 @@ from htbam_db_api.csv_processing import process_dataframe_kinetics, process_data
 from htbam_db_api.data import Data3D
 
 from pathlib import Path
+from copy import copy
 
 import pandas as pd
 import numpy as np
+import pint
 
 def verify_file_exists(file_path: str) -> None:
         '''
@@ -43,15 +45,15 @@ def verify_file_exists(file_path: str) -> None:
             raise HtbamDBException(f"File {file_path} does not exist. We found the parent file {parent_file} but it does not contain the file you requested.\n \
                                    We found the following files in the parent directory:\n" + "\n".join(parent_file_contents))
 
-def load_run_from_csv(csv_path: str, run_type:str, conc_unit_str: str) -> Data3D:
+def load_run_from_csv(csv_path: str, run_type:str, conc_unit: pint.Unit, time_unit: pint.Unit) -> Data3D:
     '''
     Loads a run from a CSV file, and processes it into a dict of numpy arrays.
 
     Arguments:
         csv_path: The path to the CSV file
         run_type: The type of run (kinetics, standard curve, etc.)
-        conc_unit_str: The unit string for the concentration (e.g. 'nM', 'uM', etc.)
-
+        conc_unit: The unit for the concentration (e.g. 'nM', 'uM', etc.)
+        time_unit: The unit for the time (e.g. 's', 'min', etc.)
     Returns:
         A dict of numpy arrays in the 'kinetics' or 'binding' format.
     '''
@@ -61,14 +63,18 @@ def load_run_from_csv(csv_path: str, run_type:str, conc_unit_str: str) -> Data3D
 
     ### Pre-process CSV
     ### TODO: Unify standard curve and kinetics CSV formats on microscope, so we don't have to juggle here.
-    L = CSV_DATA_LABELS # shorthand for labels dict.
+    L = copy(CSV_DATA_LABELS) # shorthand for labels dict.
+    # Add units for time, and stdcurve concentration labels:
+    L['time'] += f"{time_unit:~}"
+    L['standardcurve_concentration'] += f"{conc_unit:~}".replace('µ', 'u') # cleans up uM
+
     # The standard curve CSVs look different that the usual kinetics. Let's rectify that:
     if L['time'] not in df.columns:
         df[L['time']] = 0
     # First, we convert the raw concentration string to a float:
     if L['raw_concentration'] in df.columns:
         # Kinetics CSV format
-        df[L['concentration']] = df[L['raw_concentration']].apply(lambda x: parse_concentration(x, conc_unit_str))
+        df[L['concentration']] = df[L['raw_concentration']].apply(lambda x: parse_concentration(x, conc_unit))
     else:
         # Standard curve CSV format
         df[L['concentration']] = df[L['standardcurve_concentration']]
@@ -89,6 +95,6 @@ def load_run_from_csv(csv_path: str, run_type:str, conc_unit_str: str) -> Data3D
     }
 
     # Pass our dataframe into the function which will process into a dict of numpy arrays.
-    run_data = data_processing_functions[run_type](df)
+    run_data = data_processing_functions[run_type](df, time_unit, conc_unit)
 
     return run_data

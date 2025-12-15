@@ -7,9 +7,11 @@ import json
 from pathlib import Path
 import re
 from copy import deepcopy
+import pint
 
 from htbam_db_api.exceptions import HtbamDBException
 from htbam_db_api.io import verify_file_exists, load_run_from_csv
+from htbam_db_api.units import units
 
 class AbstractHtbamDBAPI(ABC):
     def __init__(self):
@@ -30,8 +32,8 @@ class AbstractHtbamDBAPI(ABC):
 class LocalHtbamDBAPI(AbstractHtbamDBAPI):
    
 
-    def __init__(self, standard_curve_data_path: str, standard_name: str, standard_substrate: str, standard_units: str,
-                  kinetic_data_path: str, kinetic_name: str, kinetic_substrate: str, kinetic_units: str):
+    def __init__(self, standard_curve_data_path: str, standard_name: str, standard_substrate: str, standard_units: pint.Unit,
+                  kinetic_data_path: str, kinetic_name: str, kinetic_substrate: str, kinetic_units: pint.Unit, time_units: pint.Unit):
         super().__init__()
 
         # Verify that the files exist
@@ -39,8 +41,8 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
         verify_file_exists(kinetic_data_path)
         
         # The data is in format 'kinetics' for both standard curve and kinetics.
-        standard_data = load_run_from_csv(standard_curve_data_path, 'kinetics', standard_units)
-        kinetics_data = load_run_from_csv(kinetic_data_path, 'kinetics', kinetic_units)
+        standard_data = load_run_from_csv(standard_curve_data_path, 'kinetics', standard_units, time_units)
+        kinetics_data = load_run_from_csv(kinetic_data_path, 'kinetics', kinetic_units, time_units)
         
         self._init_json_dict()
 
@@ -97,6 +99,7 @@ class LocalHtbamDBAPI(AbstractHtbamDBAPI):
             meta=meta,
             dep_var=np.array(button_quant_sum),  # (n_chambers, 1)
             dep_var_type=["luminance"],  # e.g. "luminance", "product", etc
+            dep_var_units=[units.RFU],
         )
         
         return button_quant_data
