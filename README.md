@@ -12,15 +12,21 @@ ___
 
 
 ## Installation
-### For latest code, clone the repo and install locally
 
-1. Clone  this repo (private) from the pinneylab Github
+#### Install Stable Release via Wheel File
+Download the latest wheel file from the [Release Page](https://github.com/pinneylab/htbam_db_api/releases)
+
+Then, install the package to your conda environment using:
+
+```pip install /path/to/downloaded/wheel.file```
+
+#### For latest code (Not recommended) clone the repo and install locally
+
+1. Clone  this repo from the pinneylab Github
 2. Change directory to unzipped package path
     - `$ cd /repo-download-dir`
-3. PIP install the package in place and make editable
+3. pip install the package in place and make editable
     - `$ pip install -e .`
-
-### For stable code, install version via wheel file
 
 ## Tutorial
 
